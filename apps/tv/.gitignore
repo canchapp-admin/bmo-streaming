@@ -23,3 +23,8 @@ expo-env.d.ts
 # variables de entorno locales
 .env*.local
 .env
+
+# Tizen / Samsung TV (scripts/tizen-install.sh)
+.tizen-web/
+.tizen-build/
+*.wgt

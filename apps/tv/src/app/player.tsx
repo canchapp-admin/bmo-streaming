@@ -7,9 +7,11 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  useTVEventHandler,
   View,
 } from 'react-native'
+// En nativo reexporta el hook de react-native-tvos; en el build web (Samsung TV
+// / Tizen) lo reimplementa con las teclas del control remoto.
+import { useTVEventHandler } from '@/bmo/tvEvents'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { LinearGradient } from 'expo-linear-gradient'
 import { Image } from 'expo-image'

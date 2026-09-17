@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Manifiesto del widget de Samsung TV (Tizen). El .wgt que instala
+  scripts/tizen-install.sh se arma con este archivo + el export web de Expo.
+
+  - tizen:application@id  = <package-id>.<nombre>; el package-id son 10
+    caracteres alfanuméricos y tiene que coincidir con @package.
+  - required_version 6.0 cubre los Samsung de 2021 en adelante. Para TVs más
+    viejos bajalo (5.5 = 2020, 5.0 = 2019) y revisá que el TV soporte las APIs.
+  - access/allow-navigation abiertos porque los streams y el API salen a hosts
+    arbitrarios (TMDB, el API propio por IP del LAN, los proveedores).
+-->
+<widget xmlns="http://www.w3.org/ns/widgets" xmlns:tizen="http://tizen.org/ns/widgets"
+        id="http://rgdev.tech/bmotv" version="1.0.0" viewmodes="maximized">
+  <tizen:application id="bmostreamg.BMOTV" package="bmostreamg" required_version="6.0"/>
+  <name>BMO TV</name>
+  <icon src="icon.png"/>
+  <content src="index.html"/>
+  <tizen:profile name="tv-samsung"/>
+  <feature name="http://tizen.org/feature/screen.size.all"/>
+  <tizen:privilege name="http://tizen.org/privilege/internet"/>
+  <tizen:privilege name="http://tizen.org/privilege/tv.inputdevice"/>
+  <tizen:setting screen-orientation="landscape" context-menu="disable"
+                 background-support="disable" encryption="disable"
+                 install-location="auto" hwkey-event="enable"/>
+  <!--
+    Sin esto la app se ve EN BLANCO. Los widgets de Tizen traen una CSP por
+    defecto con `style-src 'self'`, y react-native-web arma toda su hoja de
+    estilos en un <style> inline: el elemento se crea pero el TV no le asocia
+    ningún CSSStyleSheet (`element.sheet === null`), así que el árbol queda sin
+    una sola regla — texto negro sobre fondo blanco. `unsafe-inline` en style-src
+    es lo que lo destraba; script-src va igual de abierto porque el bundle usa
+    eval para los worklets.
+  -->
+  <tizen:content-security-policy>
+    default-src * data: blob: 'unsafe-inline' 'unsafe-eval';
+    style-src * 'unsafe-inline';
+    script-src * 'unsafe-inline' 'unsafe-eval';
+    img-src * data: blob:;
+    media-src * data: blob:;
+    connect-src *;
+  </tizen:content-security-policy>
+  <access origin="*" subdomains="true"/>
+  <tizen:allow-navigation>*</tizen:allow-navigation>
+</widget>

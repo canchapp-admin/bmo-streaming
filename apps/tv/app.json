@@ -19,7 +19,8 @@
       "package": "com.rgdev.bmostreaming.tv"
     },
     "web": {
-      "output": "static",
+      "bundler": "metro",
+      "output": "single",
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
