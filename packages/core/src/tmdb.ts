@@ -180,6 +180,15 @@ export type StudioDetail = GenreDetail & {
   genres?: { name: string; id: number; type: 'movie' | 'tv'; results: MediaItem[] }[]
 }
 
+// Colección de un tema del buscador (ver packages/core/src/themes.ts).
+export type ThemeRowData = {
+  title: string
+  type: 'movie' | 'tv'
+  style: 'poster' | 'backdrop' | 'ranked'
+  results: MediaItem[]
+}
+export type ThemeDetail = { key: string; name: string; rows: ThemeRowData[] }
+
 export type GenreRow = { name: string; results: MediaItem[] }
 // Fila por plataforma; `key` enlaza al catálogo de marca (/studio/[key]).
 export type ProviderRow = { name: string; key: string; results: MediaItem[] }
@@ -215,6 +224,7 @@ export const tmdb = {
   discover: (type: 'movie' | 'tv', genreId: string | number) =>
     t<Paged<MediaItem>>(`/tmdb/discover/${type}/${genreId}`),
   shortMovies: () => t<Paged<MediaItem>>('/tmdb/short-movies'),
+  theme: (key: string) => t<ThemeDetail>(`/tmdb/theme/${key}`),
   genre: (type: 'movie' | 'tv', id: string | number) =>
     t<GenreDetail>(`/tmdb/genre/${type}/${id}`),
   studio: (key: string) => t<StudioDetail>(`/tmdb/studio/${key}`),

@@ -70,6 +70,171 @@ const STUDIO_GENRES: Record<'movie' | 'tv', [string, number][]> = {
 const STUDIO_GENRE_MIN = 8
 const STUDIO_GENRE_MAX = 7
 
+
+// ── Temas del buscador ──────────────────────────────────────────────────
+// Cada tema es una lista de filas; cada fila, un discover de TMDB con
+// palabras clave (`with_keywords`, `|` = OR), géneros u origen. IDs de
+// keywords verificados contra la API de TMDB (search/keyword + conteos de
+// discover). Las claves coinciden con SEARCH_THEMES de packages/core/src/themes.ts.
+type ThemeRow = {
+  title: string
+  type: 'movie' | 'tv'
+  sort?: 'popular' | 'top' | 'recent'
+  // Fila con números (Top 10) o con imágenes horizontales; por defecto, pósters.
+  style?: 'poster' | 'backdrop' | 'ranked'
+  params: Record<string, string | number>
+}
+const KW = {
+  christmas: '207317|1991|5570|260365', // christmas, santa claus, christmas tree, christmas eve
+  halloween: '3335|9694|232795', // halloween, halloween party, halloween night
+  witch: '616',
+  vampire: '3133',
+  dayOfTheDead: '209789',
+  ghost: '3358|162846', // haunted house, ghost
+  slasher: '12339',
+  valentine: '160404',
+  zombie: '12377|186565', // zombie, zombie apocalypse
+  superhero: '9715|155030', // superhero, superhero team
+  dinosaur: '12616',
+  kaiju: '161791',
+  space: '252634|3801', // outer space, space travel
+  alien: '9951',
+}
+const NOT_HORROR = { without_genres: 27 }
+const FAMILY = { with_genres: '16|10751' }
+
+const THEMES: Record<string, { name: string; rows: ThemeRow[] }> = {
+  navidad: {
+    name: 'Navidad',
+    rows: [
+      { title: 'Lo más visto en Navidad', type: 'movie', params: { with_keywords: KW.christmas, ...NOT_HORROR } },
+      { title: 'Clásicos navideños', type: 'movie', sort: 'top', style: 'ranked', params: { with_keywords: KW.christmas, ...NOT_HORROR, 'vote_count.gte': 800 } },
+      { title: 'Para ver en familia', type: 'movie', style: 'backdrop', params: { with_keywords: KW.christmas, ...FAMILY, ...NOT_HORROR } },
+      { title: 'Comedias navideñas', type: 'movie', params: { with_keywords: KW.christmas, with_genres: 35, ...NOT_HORROR } },
+      { title: 'Romances de Navidad', type: 'movie', params: { with_keywords: KW.christmas, with_genres: 10749, ...NOT_HORROR } },
+      { title: 'Series y especiales', type: 'tv', params: { with_keywords: KW.christmas } },
+      { title: 'Navidad de terror', type: 'movie', style: 'backdrop', params: { with_keywords: KW.christmas, with_genres: 27 } },
+    ],
+  },
+  halloween: {
+    name: 'Halloween',
+    rows: [
+      { title: 'Noche de Halloween', type: 'movie', params: { with_keywords: KW.halloween } },
+      { title: 'Halloween en familia', type: 'movie', style: 'backdrop', params: { with_keywords: KW.halloween, ...FAMILY } },
+      { title: 'Las de culto', type: 'movie', sort: 'top', style: 'ranked', params: { with_keywords: KW.halloween, 'vote_count.gte': 800 } },
+      { title: 'Series para Halloween', type: 'tv', params: { with_keywords: KW.halloween } },
+      { title: 'Brujas', type: 'movie', params: { with_keywords: KW.witch } },
+      { title: 'Vampiros', type: 'movie', style: 'backdrop', params: { with_keywords: KW.vampire } },
+      { title: 'Casas embrujadas', type: 'movie', params: { with_keywords: KW.ghost, with_genres: 27 } },
+    ],
+  },
+  diademuertos: {
+    name: 'Día de Muertos',
+    rows: [
+      { title: 'Día de Muertos', type: 'movie', style: 'backdrop', params: { with_keywords: KW.dayOfTheDead, 'vote_count.gte': 5 } },
+      { title: 'Cine mexicano aclamado', type: 'movie', sort: 'top', style: 'ranked', params: { with_origin_country: 'MX', without_genres: 99, 'vote_count.gte': 150 } },
+      { title: 'Hecho en México', type: 'movie', params: { with_origin_country: 'MX', without_genres: 99, 'vote_count.gte': 40 } },
+      { title: 'Fantasmas para toda la familia', type: 'movie', params: { with_keywords: KW.ghost, ...FAMILY } },
+      { title: 'Series mexicanas', type: 'tv', params: { with_origin_country: 'MX', without_genres: '99|10764|10767', 'vote_count.gte': 20 } },
+    ],
+  },
+  terror: {
+    name: 'Terror',
+    rows: [
+      { title: 'Lo más visto en terror', type: 'movie', params: { with_genres: 27 } },
+      { title: 'Clásicos del terror', type: 'movie', sort: 'top', style: 'ranked', params: { with_genres: 27, 'vote_count.gte': 1500 } },
+      { title: 'Recién salidas', type: 'movie', sort: 'recent', style: 'backdrop', params: { with_genres: 27, 'vote_count.gte': 60 } },
+      { title: 'Casas embrujadas y fantasmas', type: 'movie', params: { with_keywords: KW.ghost, with_genres: 27 } },
+      { title: 'Slashers', type: 'movie', params: { with_keywords: KW.slasher, with_genres: 27 } },
+      { title: 'Series para no dormir', type: 'tv', style: 'backdrop', params: { with_keywords: `${KW.ghost}|${KW.zombie}|${KW.halloween}` } },
+    ],
+  },
+  sanvalentin: {
+    name: 'San Valentín',
+    rows: [
+      { title: 'Para San Valentín', type: 'movie', params: { with_keywords: KW.valentine } },
+      { title: 'Comedias románticas', type: 'movie', style: 'backdrop', params: { with_genres: '10749,35', 'vote_count.gte': 300 } },
+      { title: 'Grandes historias de amor', type: 'movie', sort: 'top', style: 'ranked', params: { with_genres: 10749, 'vote_count.gte': 1500 } },
+      { title: 'Para llorar', type: 'movie', params: { with_genres: '10749,18', 'vote_count.gte': 500 } },
+      { title: 'Romance animado', type: 'movie', params: { with_genres: '10749,16' } },
+    ],
+  },
+  zombies: {
+    name: 'Zombies',
+    rows: [
+      { title: 'Lo más visto', type: 'movie', params: { with_keywords: KW.zombie } },
+      { title: 'Series de zombies', type: 'tv', style: 'backdrop', params: { with_keywords: KW.zombie } },
+      { title: 'Las mejores', type: 'movie', sort: 'top', style: 'ranked', params: { with_keywords: KW.zombie, 'vote_count.gte': 500 } },
+      { title: 'Zombies con humor', type: 'movie', params: { with_keywords: KW.zombie, with_genres: 35 } },
+      { title: 'Recién salidas', type: 'movie', sort: 'recent', params: { with_keywords: KW.zombie, 'vote_count.gte': 30 } },
+    ],
+  },
+  superheroes: {
+    name: 'Superhéroes',
+    rows: [
+      { title: 'Lo más visto', type: 'movie', params: { with_keywords: KW.superhero } },
+      { title: 'Las mejor valoradas', type: 'movie', sort: 'top', style: 'ranked', params: { with_keywords: KW.superhero, 'vote_count.gte': 3000 } },
+      { title: 'Series de superhéroes', type: 'tv', style: 'backdrop', params: { with_keywords: KW.superhero } },
+      { title: 'Animadas', type: 'movie', params: { with_keywords: KW.superhero, with_genres: 16 } },
+      { title: 'Recién llegadas', type: 'movie', sort: 'recent', params: { with_keywords: KW.superhero, 'vote_count.gte': 100 } },
+    ],
+  },
+  anime: {
+    name: 'Anime',
+    rows: [
+      { title: 'Series de anime populares', type: 'tv', params: { with_genres: 16, with_original_language: 'ja' } },
+      { title: 'Películas de anime', type: 'movie', style: 'backdrop', params: { with_genres: 16, with_original_language: 'ja' } },
+      { title: 'Obras maestras', type: 'movie', sort: 'top', style: 'ranked', params: { with_genres: 16, with_original_language: 'ja', 'vote_count.gte': 800 } },
+      { title: 'Anime de acción', type: 'tv', params: { with_genres: '16,10759', with_original_language: 'ja' } },
+      { title: 'Studio Ghibli', type: 'movie', params: { with_companies: 10342 } },
+      { title: 'Las mejor valoradas', type: 'tv', sort: 'top', params: { with_genres: 16, with_original_language: 'ja', 'vote_count.gte': 500 } },
+    ],
+  },
+  dinosaurios: {
+    name: 'Dinosaurios',
+    rows: [
+      { title: 'Lo más visto', type: 'movie', params: { with_keywords: KW.dinosaur } },
+      { title: 'Para los más chicos', type: 'movie', style: 'backdrop', params: { with_keywords: KW.dinosaur, ...FAMILY } },
+      { title: 'Series y documentales', type: 'tv', params: { with_keywords: KW.dinosaur } },
+      { title: 'Monstruos gigantes', type: 'movie', params: { with_keywords: KW.kaiju } },
+      { title: 'Las mejor valoradas', type: 'movie', sort: 'top', style: 'ranked', params: { with_keywords: KW.dinosaur, 'vote_count.gte': 300 } },
+    ],
+  },
+  espacio: {
+    name: 'El espacio',
+    rows: [
+      { title: 'Lo más visto', type: 'movie', params: { with_keywords: KW.space } },
+      { title: 'Las mejor valoradas', type: 'movie', sort: 'top', style: 'ranked', params: { with_keywords: KW.space, 'vote_count.gte': 1500 } },
+      { title: 'Series espaciales', type: 'tv', style: 'backdrop', params: { with_keywords: KW.space } },
+      { title: 'Extraterrestres', type: 'movie', params: { with_keywords: KW.alien } },
+      { title: 'Para toda la familia', type: 'movie', params: { with_keywords: KW.space, ...FAMILY } },
+    ],
+  },
+}
+const THEME_ROW_MIN = 6
+
+async function themeRow(row: ThemeRow) {
+  const isMovie = row.type === 'movie'
+  const sortBy =
+    row.sort === 'top' ? 'vote_average.desc'
+    : row.sort === 'recent' ? (isMovie ? 'primary_release_date.desc' : 'first_air_date.desc')
+    : 'popularity.desc'
+  const params: Record<string, string | number> = {
+    // Piso de votos: sin esto aparecen rarezas sin póster ni sinopsis.
+    'vote_count.gte': row.sort === 'top' ? 300 : 20,
+    ...row.params,
+  }
+  // "Recientes" sin tope trae estrenos futuros sin arte.
+  if (row.sort === 'recent') {
+    params[isMovie ? 'primary_release_date.lte' : 'first_air_date.lte'] = new Date().toISOString().slice(0, 10)
+  }
+  const res: any = await tmdbService.discoverSorted(row.type, sortBy, params)
+  const results = (res?.results ?? [])
+    .filter((r: any) => r.poster_path)
+    .map((r: any) => ({ ...r, media_type: row.type }))
+  return { title: row.title, type: row.type, style: row.style ?? 'poster', results }
+}
+
 async function safeGenres(
   genres: [string, number][],
   type: 'movie' | 'tv'
@@ -454,6 +619,28 @@ export const tmdbRoutes = new Elysia({ prefix: '/tmdb' })
       }
     },
     { params: t.Object({ type: t.String(), id: t.String() }) }
+  )
+
+  // Colección de un tema del buscador (Navidad, Halloween, Terror…). Filas
+  // que no llegan al mínimo de títulos no se mandan: una fila de 3 se ve rota.
+  .get(
+    '/theme/:key',
+    ({ params, set }) => {
+      const key = params.key.toLowerCase()
+      const theme = THEMES[key]
+      if (!theme) {
+        set.status = 404
+        return { key, name: params.key, rows: [] }
+      }
+      return cache.resolve(`theme:${key}`, async () => {
+        const settled = await Promise.allSettled(theme.rows.map(themeRow))
+        const rows = settled
+          .flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []))
+          .filter((r) => r.results.length >= THEME_ROW_MIN)
+        return { key, name: theme.name, rows }
+      })
+    },
+    { params: t.Object({ key: t.String() }) }
   )
 
   // "Una peli cortita" del Home: películas populares de hora y media o menos.

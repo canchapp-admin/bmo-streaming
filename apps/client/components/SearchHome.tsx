@@ -7,6 +7,7 @@ import { backdropUrl, titleOf, type Category, type MediaItem } from '@/lib/tmdb'
 import { Touchable } from './Touchable'
 import { RowHeading } from './RowHeading'
 import { PlatformRow, FranchiseRow } from './PlatformRow'
+import { ThemeRow } from './ThemeCards'
 import { colors } from '@/lib/theme'
 
 const KIDS_GENRES = new Set([16, 10751, 10762])
@@ -70,6 +71,9 @@ export function SearchHome({
           </View>
         </View>
       )}
+
+      {/* Especiales (Navidad, Halloween…): los de temporada primero. */}
+      <ThemeRow kids={kids} />
 
       {trending.length > 0 && (
         <View style={styles.section}>

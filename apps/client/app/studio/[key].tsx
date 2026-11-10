@@ -21,6 +21,7 @@ import { BRAND_ART, LOGO_BASE } from '@/components/PlatformRow'
 import { EmptyState } from '@/components/EmptyState'
 import { SkeletonRow } from '@/components/Skeleton'
 import { colors } from '@/lib/theme'
+import { mix, withAlpha } from '@/lib/color'
 
 const { width } = Dimensions.get('window')
 const HERO_H = Math.round(width * 1.15)
@@ -49,6 +50,8 @@ export default function StudioScreen() {
   const art = key ? BRAND_ART[key] : undefined
   // Color de ambiente: el de la marca (rojo Netflix, violeta HBO…).
   const glow = brand?.colors[0] ?? art?.bg[0] ?? '#222222'
+  // Fondo base: la marca muy oscurecida (rojo Netflix → bordó casi negro).
+  const base = mix(glow, 0.22)
   const primary: 'movie' | 'tv' =
     data?.primary === 'tv' || (data?.primary == null && data?.type === 'tv') ? 'tv' : 'movie'
 
@@ -95,17 +98,21 @@ export default function StudioScreen() {
         scrollEventThrottle={16}
         onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: true })}
       >
-        {/* ── Resplandor de la marca: va por detrás de todo y se apaga hacia
-            abajo, así las primeras filas también quedan "teñidas". ── */}
+        {/* ── Resplandor de la marca debajo del hero: arranca EXACTAMENTE en
+            el mismo color opaco en que termina el hero (`base`) y se apaga a
+            negro. Antes el hero terminaba en negro y el resplandor seguía en
+            rojo por detrás: quedaba una línea cortada, peor al hacer scroll. ── */}
         <LinearGradient
-          colors={[`${glow}66`, `${glow}22`, 'transparent']}
-          locations={[0, 0.45, 1]}
-          style={[styles.ambient, { top: HERO_H - 120 }]}
+          colors={[base, mix(glow, 0.1), '#000']}
+          locations={[0, 0.4, 1]}
+          style={[styles.ambient, { top: HERO_H }]}
           pointerEvents="none"
         />
 
         {/* ── Hero ── */}
-        <View style={{ height: HERO_H }}>
+        {/* overflow hidden: con el parallax la foto ya no se sale del hero
+            por encima de las filas. */}
+        <View style={{ height: HERO_H, overflow: 'hidden' }}>
           <Animated.View style={[StyleSheet.absoluteFill, { transform: [{ translateY: heroShift }] }]}>
             {heroUrl ? (
               <Image source={heroUrl} style={StyleSheet.absoluteFill} contentFit="cover" transition={400} />
@@ -113,14 +120,17 @@ export default function StudioScreen() {
               <View style={[StyleSheet.absoluteFill, { backgroundColor: glow }]} />
             )}
           </Animated.View>
+          {/* Arriba, una sombra neutra para que se lean el logo y la hora. */}
           <LinearGradient
-            colors={[`${glow}AA`, 'transparent']}
-            locations={[0, 0.4]}
+            colors={['rgba(0,0,0,0.55)', 'rgba(0,0,0,0)']}
+            locations={[0, 0.3]}
             style={StyleSheet.absoluteFill}
           />
+          {/* Abajo, un fundido largo y con muchas paradas (sin escalones) hacia
+              el color base de la marca. */}
           <LinearGradient
-            colors={['transparent', `${glow}55`, '#000']}
-            locations={[0.35, 0.75, 1]}
+            colors={[withAlpha(base, 0), withAlpha(base, 0.35), withAlpha(base, 0.75), withAlpha(base, 0.94), base]}
+            locations={[0.3, 0.5, 0.7, 0.86, 1]}
             style={StyleSheet.absoluteFill}
           />
 

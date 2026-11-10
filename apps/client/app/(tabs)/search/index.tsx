@@ -8,10 +8,18 @@ import {
   Text,
   StyleSheet,
   ActivityIndicator,
+  Animated,
   Dimensions,
 } from 'react-native'
+import { LinearGradient } from 'expo-linear-gradient'
 import { tmdb, type MediaItem } from '@/lib/tmdb'
 import { matchStudio, type StudioBrand } from '@/lib/studios'
+import { matchTheme } from '@/lib/themes'
+import { mix, withAlpha } from '@/lib/color'
+import { useReduceMotion } from '@/lib/useReduceMotion'
+import { ThemeBanner } from '@/components/ThemeCards'
+import { PosterRow } from '@/components/PosterRow'
+import { useRouter } from 'expo-router'
 import { useAsync } from '@/lib/useAsync'
 import { useDebouncedValue } from '@/lib/useDebouncedValue'
 import { PosterCard } from '@/components/PosterCard'
@@ -53,6 +61,33 @@ export default function SearchScreen() {
   }
 
   const searching = query.trim().length >= 2
+  const router = useRouter()
+  const reduceMotion = useReduceMotion()
+
+  // Tema (Navidad, Halloween, Terror…): se detecta en vivo sobre el texto, es
+  // local e instantáneo. Cambia el ambiente de la pantalla y trae una vista
+  // previa de la colección (misma caché que la pantalla del tema).
+  const theme = searching ? matchTheme(query, { kids }) : null
+  const { data: themeData } = useAsync(
+    () => (theme ? tmdb.theme(theme.key) : Promise.resolve(null)),
+    [theme?.key],
+    theme ? `theme:${theme.key}` : undefined
+  )
+  const themePreview = theme && themeData?.key === theme.key
+    ? forProfile(
+        (themeData.rows[0]?.results ?? []).map((x) => ({ ...x, media_type: themeData.rows[0].type }) as MediaItem),
+        kids
+      )
+    : []
+
+  // El ambiente entra con un fundido corto (sin animación con Reduce Motion).
+  const ambient = useRef(new Animated.Value(0)).current
+  useEffect(() => {
+    if (!theme) { ambient.setValue(0); return }
+    if (reduceMotion) { ambient.setValue(1); return }
+    ambient.setValue(0)
+    Animated.timing(ambient, { toValue: 1, duration: 450, useNativeDriver: true }).start()
+  }, [theme?.key, reduceMotion])
 
   // El texto se refleja al instante (lo local no espera a nadie) pero la
   // consulta a la red va sobre el valor demorado: antes salía un request por
@@ -96,9 +131,38 @@ export default function SearchScreen() {
 
   // Cabecera de resultados: banner de marca + personas encontradas, encima de
   // la cuadrícula de títulos.
-  const hasExtras = !!brand || people.length > 0
+  const hasExtras = !!brand || !!theme || people.length > 0
   const Header = searching && hasExtras ? (
     <View style={styles.header}>
+      {theme && (
+        // Ambiente del tema: va DENTRO de la cabecera (y no encima de la
+        // lista) para quedar detrás de los resultados; sube por debajo de la
+        // barra y se apaga a negro. Dos capas: el baño en los dos colores del
+        // tema, en diagonal, y el fundido vertical a negro.
+        <Animated.View pointerEvents="none" style={[styles.ambient, { opacity: ambient }]}>
+          <LinearGradient
+            colors={[withAlpha(theme.colors[0], 0.55), withAlpha(mix(theme.colors[1], 0.8), 0.45)]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0.7 }}
+            style={StyleSheet.absoluteFill}
+          />
+          <LinearGradient
+            colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.55)', '#000']}
+            locations={[0, 0.5, 1]}
+            style={StyleSheet.absoluteFill}
+          />
+        </Animated.View>
+      )}
+      {theme && <ThemeBanner theme={theme} />}
+      {theme && themePreview.length > 0 && (
+        <View style={styles.bleed}>
+          <PosterRow
+            title={themeData!.rows[0].title}
+            items={themePreview}
+            onPressTitle={() => router.push(`/theme/${theme.key}` as never)}
+          />
+        </View>
+      )}
       {brand && <StudioBanner brand={brand} />}
       {people.length > 0 && (
         <View style={styles.peopleSection}>
@@ -198,6 +262,10 @@ const styles = StyleSheet.create({
   spinner: { marginTop: 80 },
   empty: { marginTop: 80, alignItems: 'center' },
   header: { marginBottom: 12, gap: 20 },
+  // Sube 360 pt por debajo de la barra de búsqueda y se extiende a los bordes.
+  ambient: { position: 'absolute', top: -360, left: -16, right: -16, height: 820 },
+  // La fila trae su propio margen de 20; anula el de 16 de la lista.
+  bleed: { marginHorizontal: -16, marginBottom: -28 },
   peopleSection: { gap: 10 },
   peopleList: { gap: 8 },
   sectionLabel: {
