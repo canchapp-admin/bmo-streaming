@@ -648,6 +648,28 @@ describe('preferencia de español', () => {
     expect(selectRunnable(r).map((c) => c.parsed.filename)).toEqual([eng])
   })
 
+  test('pidiendo latino, un latino de bitrate medio le gana a un multi CASTELLANO liviano', () => {
+    // Caso real (House of the Dragon S01E01): ganaba el castellano y se oía castellano.
+    const castLight = 'Superman.2020.1080p.WEB-DL.Castellano.English.x265.mkv 💾 2.0 GB'
+    const latMid = 'Superman.2020.1080p.WEB-DL.Latino.English.x264.mkv 💾 9.5 GB'
+    const r = rankCandidates([cached(castLight), cached(latMid)], ref(), 'high', 'latino')
+    expect(r.ranked[0].parsed.filename).toBe(latMid)
+  })
+
+  test('pidiendo latino, un latino 1080p pesado le gana a un original liviano', () => {
+    const engLight = 'Superman.2020.1080p.WEB-DL.English.x265.mkv 💾 2.0 GB'
+    const latHeavy = 'Superman.2020.1080p.BluRay.Latino.English.x264.mkv 💾 14 GB'
+    const r = rankCandidates([cached(engLight), cached(latHeavy)], ref(), 'high', 'latino')
+    expect(r.ranked[0].parsed.filename).toBe(latHeavy)
+  })
+
+  test('el bonus NO rescata un remux 4K latino frente a un 1080p liviano', () => {
+    const engLight = 'Superman.2020.1080p.WEB-DL.English.x265.mkv 💾 2.0 GB'
+    const latRemux = 'Superman.2020.2160p.BluRay.REMUX.DV.HDR.Latino.English.x265.10bit.mkv 💾 60 GB'
+    const r = rankCandidates([cached(engLight), cached(latRemux)], ref(), 'high', 'latino')
+    expect(r.ranked[0].parsed.filename).toBe(engLight)
+  })
+
   test('el bonus NO rescata un 4K reescalado', () => {
     const fake = 'Superman.2020.4Kreescalado.2160p.Latino.x265.mkv'
     const r = rankCandidates([cached(fake), cached(eng)], ref(), 'high', 'latino')

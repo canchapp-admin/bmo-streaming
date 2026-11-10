@@ -477,14 +477,21 @@ export function scoreStream(
 
   // Preferencia de idioma. SOLO cuando el usuario pidió español: los candidatos
   // ya son todos cacheados (arrancan igual de rápido), así que elegir entre
-  // ellos por idioma no cuesta velocidad. El peso (35) deja que un release latino
-  // en 720p le gane a uno original 1080p parecido, pero no que un latino malo
-  // (cam, 4K upscale, remux enorme) le gane a uno bueno: esos castigos son mayores.
+  // ellos por idioma no cuesta velocidad.
+  //
+  // Pesos (antes 35/30/12): con 35 un latino 1080p de bitrate medio (-25) perdía
+  // contra un multi-idioma CASTELLANO liviano (+12 +15) — caso real House of the
+  // Dragon S01E01: había 5 latinos cacheados y ganaba el castellano, y como el
+  // player auto-elige la pista "Español", el usuario oía castellano habiendo
+  // pedido latino. Ahora un latino explícito le gana a cualquier no-latino de
+  // calidad razonable; el castellano casi no suma (no es lo que se pidió).
+  // Siguen sin rescatar un latino MALO: cam/screener se filtran aparte, y un 4K
+  // reescalado o un remux 4K acumulan castigos mayores que el bonus.
   if (prefer === 'latino') {
     parts.langPref =
-      p.langs.has('latino') ? 35
-      : p.langs.has('spanish') && !p.langs.has('castellano') ? 30
-      : p.langs.has('castellano') ? 12
+      p.langs.has('latino') ? 80
+      : p.langs.has('spanish') && !p.langs.has('castellano') ? 45
+      : p.langs.has('castellano') ? 10
       : 0
   }
 
