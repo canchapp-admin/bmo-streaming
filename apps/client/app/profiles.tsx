@@ -1,29 +1,37 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   View, Text, StyleSheet, TextInput, ScrollView, ActivityIndicator,
-  Animated, Easing, Dimensions, KeyboardAvoidingView, Platform,
+  Animated, Easing, KeyboardAvoidingView, Platform, Alert, useWindowDimensions,
 } from 'react-native'
 import { useRouter } from 'expo-router'
 import * as Haptics from 'expo-haptics'
 import { SymbolView } from 'expo-symbols'
-import { LinearGradient } from 'expo-linear-gradient'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import { AmbientBackground } from '@/components/AmbientBackground'
 import { useAuth } from '@/lib/auth'
 import { AVATARS, DEFAULT_AVATAR } from '@/lib/avatars'
 import { ProfileAvatar } from '@/components/ProfileAvatar'
 import { ProfileEditor } from '@/components/ProfileEditor'
 import { Touchable } from '@/components/Touchable'
+import { Glass } from '@/components/Glass'
 import { PinPad, PIN_LENGTH } from '@/components/PinPad'
 import type { Profile } from '@/lib/supabase'
-import { colors, gradients } from '@/lib/theme'
+import { colors } from '@/lib/theme'
 
 const MAX_PROFILES = 5 // igual que el tope del trigger en el esquema
-const { width } = Dimensions.get('window')
-// Tres por fila con aire a los costados; el avatar manda sobre el ancho.
-const CELL = Math.min(104, (width - 48 - 32) / 3)
+const GRID_GAP = 28
+const SIDE = 24
 
 export default function ProfilesScreen() {
   const insets = useSafeAreaInsets()
+  // Hook y no Dimensions al cargar el módulo: en iPad o en la Mac (ventana
+  // redimensionable) el tamaño cambia y la grilla tiene que acompañar.
+  const { width } = useWindowDimensions()
+  // Dos por fila, avatares grandes: con hasta 5 perfiles cada uno merece ser
+  // un blanco cómodo, no una fila apretada de tres. En pantallas anchas se
+  // tope en 132 para que no se vuelvan gigantes, y caben más columnas solas.
+  const CELL = Math.min(132, (width - SIDE * 2 - GRID_GAP) / 2 - 12)
+  const gridWidth = Math.min(width - SIDE * 2, (CELL + 12) * 2 + GRID_GAP)
   const router = useRouter()
   const {
     profiles, profile, selectProfile, createProfile, updateProfile,
@@ -61,6 +69,27 @@ export default function ProfilesScreen() {
     router.replace('/')
   }
 
+  // Cerrar sesión saca a toda la casa de la cuenta: en una pantalla que usa
+  // cualquiera (chicos, visitas) no puede quedar a un toque accidental.
+  function confirmSignOut() {
+    Alert.alert(
+      '¿Cerrar sesión?',
+      'Todos los perfiles de este dispositivo van a salir de la cuenta.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Cerrar sesión', style: 'destructive', onPress: () => { signOut() } },
+      ],
+    )
+  }
+
+  // Mantener apretado: abre el editor de ese perfil sin pasar por
+  // "Administrar perfiles". Golpe háptico más fuerte que el toque normal para
+  // que se sienta como un gesto distinto.
+  function editNow(p: Profile) {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
+    setEditTarget(p)
+  }
+
   // En modo edición el toque abre el detalle en vez de entrar al perfil.
   function pick(p: Profile) {
     if (editing) { setEditTarget(p); return }
@@ -70,7 +99,7 @@ export default function ProfilesScreen() {
 
   return (
     <View style={styles.root}>
-      <LinearGradient colors={gradients.ambient} locations={[0, 0.5, 1]} style={StyleSheet.absoluteFill} />
+      <AmbientBackground />
 
       {pinTarget ? (
         // Con PIN ya puesto se quita directo; si no, se define uno nuevo.
@@ -128,77 +157,115 @@ export default function ProfilesScreen() {
         <ScrollView
           contentContainerStyle={[
             styles.content,
-            { paddingTop: insets.top + 80, paddingBottom: insets.bottom + 40 },
+            { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 16 },
           ]}
           showsVerticalScrollIndicator={false}
         >
-          <Animated.View style={rise(0)}>
-            <Text style={styles.title}>¿Quién está viendo?</Text>
-            <Text style={styles.subtitle}>Cada perfil guarda su propia lista y su progreso.</Text>
-          </Animated.View>
+          {/* Título y perfiles centrados en el alto disponible: con pocos
+              perfiles ya no queda media pantalla vacía abajo. */}
+          <View style={styles.main}>
+            <Animated.View style={rise(0)}>
+              <Text style={styles.title}>¿Quién está viendo?</Text>
+              <Text style={styles.subtitle}>Cada perfil guarda su propia lista y su progreso.</Text>
+            </Animated.View>
 
-          <Animated.View style={[styles.grid, rise(6)]}>
-            {profiles.map((p) => (
-              <Touchable key={p.id} scaleTo={0.93} haptic="light" style={styles.cell} onPress={() => pick(p)}>
-                <View>
-                  <ProfileAvatar
-                    avatar={p.avatar}
-                    size={CELL}
-                    selected={!editing && profile?.id === p.id}
-                  />
-                  {editing ? (
-                    <View style={styles.deleteBadge}>
-                      <SymbolView name="trash.fill" tintColor="#fff" style={styles.lockIcon} />
-                    </View>
-                  ) : p.has_pin ? (
-                    <View style={styles.lockBadge}>
-                      <SymbolView name="lock.fill" tintColor="#000" style={styles.lockIcon} />
-                    </View>
-                  ) : null}
-                </View>
-                <Text
-                  style={[styles.name, profile?.id === p.id && styles.nameActive]}
-                  numberOfLines={1}
+            <Animated.View style={[styles.grid, { width: gridWidth }, rise(6)]}>
+              {profiles.map((p) => (
+                <Touchable
+                  key={p.id}
+                  scaleTo={0.93}
+                  haptic="light"
+                  style={[styles.cell, { width: CELL + 12 }]}
+                  onPress={() => pick(p)}
+                  // Atajo: mantener apretado edita directo, como en la pantalla
+                  // de inicio del iPhone. Quitar el PIN sigue pidiendo el PIN.
+                  onLongPress={editing ? undefined : () => editNow(p)}
+                  delayLongPress={350}
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    editing ? `Editar perfil ${p.name}`
+                      : p.has_pin ? `${p.name}, protegido con PIN`
+                        : p.name
+                  }
+                  accessibilityHint={editing ? undefined : 'Entra con este perfil'}
+                  accessibilityActions={editing ? undefined : [{ name: 'longpress', label: 'Editar perfil' }]}
+                  onAccessibilityAction={(e) => { if (e.nativeEvent.actionName === 'longpress') editNow(p) }}
                 >
-                  {p.name}
-                </Text>
-              </Touchable>
-            ))}
+                  <View>
+                    {/* Sin aro de "último usado": en "¿Quién está viendo?" se
+                        leía como si ya hubiera uno elegido. */}
+                    <ProfileAvatar avatar={p.avatar} size={CELL} />
+                    {/* En edición el toque abre el editor (borrar vive adentro),
+                        así que el badge anuncia "editar", no "borrar". */}
+                    {editing ? (
+                      <View style={styles.editBadge}>
+                        <SymbolView name="pencil" tintColor="#000" style={styles.lockIcon} />
+                      </View>
+                    ) : p.has_pin ? (
+                      <View style={styles.lockBadge}>
+                        <SymbolView name="lock.fill" tintColor="#000" style={styles.lockIcon} />
+                      </View>
+                    ) : null}
+                  </View>
+                  <Text style={styles.name} numberOfLines={1}>{p.name}</Text>
+                </Touchable>
+              ))}
 
-            {/* En edición se oculta: mezclar "crear" con "borrar" invita a
-                tocar el que no era. */}
-            {!editing && profiles.length < MAX_PROFILES && (
-              <Touchable scaleTo={0.93} haptic="light" style={styles.cell} onPress={() => setCreating(true)}>
-                <View style={[styles.addBox, { width: CELL, height: CELL, borderRadius: CELL / 2 }]}>
-                  <SymbolView name="plus" tintColor={colors.textDim} style={styles.addIcon} />
-                </View>
-                <Text style={styles.name}>Añadir</Text>
-              </Touchable>
-            )}
-          </Animated.View>
+              {/* En edición se oculta: mezclar "crear" con "editar" invita a
+                  tocar el que no era. */}
+              {!editing && profiles.length < MAX_PROFILES && (
+                <Touchable
+                  scaleTo={0.93}
+                  haptic="light"
+                  style={[styles.cell, { width: CELL + 12 }]}
+                  onPress={() => setCreating(true)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Añadir perfil"
+                >
+                  {/* "Añadir" es un control, no un perfil: va en vidrio. */}
+                  <Glass radius={CELL / 2} interactive style={[styles.addBox, { width: CELL, height: CELL }]}>
+                    <SymbolView name="plus" tintColor={colors.text} style={styles.addIcon} />
+                  </Glass>
+                  <Text style={[styles.name, styles.nameAdd]}>Añadir</Text>
+                </Touchable>
+              )}
+            </Animated.View>
+          </View>
 
-          {/* Solo con 2+ perfiles: borrar el único dejaría la cuenta sin
-              ninguno, y el guard te devolvería acá a crear uno. */}
-          {profiles.length > 1 && (
-            <Animated.View style={rise(10)}>
+          {/* Acciones de cuenta abajo, fuera del foco: lo principal es elegir. */}
+          <Animated.View style={[styles.footer, rise(12)]}>
+            {/* Solo con 2+ perfiles: borrar el único dejaría la cuenta sin
+                ninguno, y el guard te devolvería acá a crear uno. */}
+            {profiles.length > 1 && (
               <Touchable
                 style={styles.editBtn}
                 scaleTo={0.97}
                 haptic="light"
                 onPress={() => setEditing((v) => !v)}
+                accessibilityRole="button"
+                accessibilityLabel={editing ? 'Terminar de administrar perfiles' : 'Administrar perfiles'}
               >
-                <Text style={[styles.editText, editing && styles.editTextOn]}>
-                  {editing ? 'Listo' : 'Administrar perfiles'}
-                </Text>
+                {/* Botón cápsula de vidrio, como los de la barra de iOS 26+. En
+                    "Listo" se tiñe con el teal: es la acción para salir del modo. */}
+                <Glass radius={22} interactive tint={editing ? colors.accent : undefined} style={styles.editGlass}>
+                  <Text style={[styles.editText, editing && styles.editTextOn]}>
+                    {editing ? 'Listo' : 'Administrar perfiles'}
+                  </Text>
+                </Glass>
               </Touchable>
-            </Animated.View>
-          )}
+            )}
 
-          <Animated.View style={rise(12)}>
-            <Touchable style={styles.signOut} scaleTo={0.97} haptic="light" onPress={signOut}>
+            <Touchable
+              style={styles.signOut}
+              scaleTo={0.97}
+              haptic="light"
+              onPress={confirmSignOut}
+              accessibilityRole="button"
+              accessibilityLabel="Cerrar sesión"
+            >
               <SymbolView
                 name="rectangle.portrait.and.arrow.right"
-                tintColor={colors.textMuted}
+                tintColor={colors.textDim}
                 style={styles.signOutIcon}
               />
               <Text style={styles.signOutText}>Cerrar sesión</Text>
@@ -345,8 +412,8 @@ function RemovePinStep({
   }, [pin])
 
   return (
-    <View style={[styles.centered, { paddingTop: insets.top + 60, paddingBottom: insets.bottom + 24 }]}>
-      <ProfileAvatar avatar={profile.avatar} size={78} />
+    <View style={[styles.centered, styles.pinScreen, { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 }]}>
+      <ProfileAvatar avatar={profile.avatar} size={84} />
       <View style={styles.unlockPad}>
         <PinPad
           value={pin}
@@ -354,11 +421,9 @@ function RemovePinStep({
           title="Quitar el PIN"
           subtitle={`Introduce el PIN actual de ${profile.name}`}
           error={error}
+          onCancel={onDone}
         />
       </View>
-      <Touchable style={styles.ghostBtn} scaleTo={0.98} haptic="light" onPress={onDone}>
-        <Text style={styles.ghostText}>Cancelar</Text>
-      </Touchable>
     </View>
   )
 }
@@ -395,8 +460,8 @@ function UnlockProfile({
   }, [pin])
 
   return (
-    <View style={[styles.centered, { paddingTop: insets.top + 60, paddingBottom: insets.bottom + 24 }]}>
-      <ProfileAvatar avatar={profile.avatar} size={78} />
+    <View style={[styles.centered, styles.pinScreen, { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 }]}>
+      <ProfileAvatar avatar={profile.avatar} size={84} />
       <View style={styles.unlockPad}>
         <PinPad
           value={pin}
@@ -404,11 +469,9 @@ function UnlockProfile({
           title={profile.name}
           subtitle="Introduce el PIN de este perfil"
           error={error}
+          onCancel={onCancel}
         />
       </View>
-      <Touchable style={styles.ghostBtn} scaleTo={0.98} haptic="light" onPress={onCancel}>
-        <Text style={styles.ghostText}>Cancelar</Text>
-      </Touchable>
     </View>
   )
 }
@@ -613,8 +676,8 @@ function SetPinStep({
   }, [pin])
 
   return (
-    <View style={[styles.centered, { paddingTop: insets.top + 60, paddingBottom: insets.bottom + 24 }]}>
-      <ProfileAvatar avatar={profile.avatar} size={78} />
+    <View style={[styles.centered, styles.pinScreen, { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 }]}>
+      <ProfileAvatar avatar={profile.avatar} size={84} />
       <View style={styles.unlockPad}>
         <PinPad
           value={pin}
@@ -624,13 +687,12 @@ function SetPinStep({
             ? `4 dígitos para entrar a ${profile.name}`
             : 'Introdúcelo otra vez'}
           error={error}
+          // Saltar deja el perfil creado y sin candado: ya existe, no hay
+          // vuelta atrás que ofrecer.
+          onCancel={onDone}
+          cancelLabel="Ahora no"
         />
       </View>
-      {/* Saltar deja el perfil creado y sin candado: ya existe, no hay vuelta
-          atrás que ofrecer. */}
-      <Touchable style={styles.ghostBtn} scaleTo={0.98} haptic="light" onPress={onDone}>
-        <Text style={styles.ghostText}>Ahora no</Text>
-      </Touchable>
     </View>
   )
 }
@@ -638,7 +700,9 @@ function SetPinStep({
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#000' },
   centered: { flex: 1, alignItems: 'center', paddingHorizontal: 24 },
-  unlockPad: { marginTop: 22, marginBottom: 8 },
+  // Pantallas de PIN centradas en el alto, como el código de bloqueo de iOS.
+  pinScreen: { justifyContent: 'center' },
+  unlockPad: { marginTop: 20 },
 
   lockBadge: {
     position: 'absolute', right: 2, bottom: 2,
@@ -647,16 +711,21 @@ const styles = StyleSheet.create({
     borderWidth: 2.5, borderColor: colors.bg,
   },
   lockIcon: { width: 11, height: 11 },
-  deleteBadge: {
+  editBadge: {
     position: 'absolute', right: 2, bottom: 2,
-    width: 26, height: 26, borderRadius: 13, backgroundColor: colors.danger,
+    width: 26, height: 26, borderRadius: 13, backgroundColor: '#fff',
     alignItems: 'center', justifyContent: 'center',
     borderWidth: 2.5, borderColor: colors.bg,
   },
 
-  editBtn: { alignItems: 'center', marginTop: 34, paddingVertical: 10 },
-  editText: { color: colors.textDim, fontSize: 15, fontWeight: '600' },
-  editTextOn: { color: '#fff' },
+  // minHeight 44: área táctil mínima de Apple; el texto solo medía ~38.
+  editBtn: { alignSelf: 'center' },
+  editGlass: {
+    minHeight: 44, paddingHorizontal: 22,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  editText: { color: colors.text, fontSize: 15, fontWeight: '600' },
+  editTextOn: { color: colors.onAccent },
 
   deleteTitle: {
     color: '#fff', fontSize: 22, fontWeight: '700',
@@ -699,39 +768,42 @@ const styles = StyleSheet.create({
   checkboxOn: { backgroundColor: '#fff', borderColor: '#fff' },
 
   fill: { flex: 1 },
-  content: { paddingHorizontal: 24 },
+  content: { paddingHorizontal: SIDE, flexGrow: 1 },
+  main: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingVertical: 24 },
+  footer: { alignItems: 'center', gap: 4, paddingTop: 16 },
 
+  // Large Title de Apple: 34 bold con tracking negativo.
   title: {
-    color: '#fff', fontSize: 28, fontWeight: '800',
-    letterSpacing: -0.8, textAlign: 'center',
+    color: '#fff', fontSize: 34, fontWeight: '700',
+    letterSpacing: -0.9, textAlign: 'center',
   },
+  // textDim y no textMuted: el 40% daba ~4:1 sobre el degradé, por debajo del
+  // 4.5:1 que pide WCAG para texto de este tamaño.
   subtitle: {
-    color: colors.textMuted, fontSize: 14.5,
+    color: colors.textDim, fontSize: 14.5,
     textAlign: 'center', marginTop: 8, marginBottom: 38, lineHeight: 20,
   },
 
-  grid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 16 },
-  cell: { alignItems: 'center', width: CELL + 8 },
+  grid: {
+    flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center',
+    columnGap: GRID_GAP, rowGap: 30,
+  },
+  cell: { alignItems: 'center' },
+  // Todos los nombres iguales: ninguno está "elegido" hasta que lo tocás.
   name: {
-    color: colors.textDim, fontSize: 14,
-    fontWeight: '600', marginTop: 11, textAlign: 'center',
+    color: colors.text, fontSize: 16,
+    fontWeight: '600', marginTop: 12, textAlign: 'center', letterSpacing: -0.2,
   },
-  nameActive: { color: '#fff' },
-  addBox: {
-    alignItems: 'center', justifyContent: 'center',
-    backgroundColor: colors.fillSubtle,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
-    borderStyle: 'dashed',
-  },
+  nameAdd: { color: colors.textDim },
+  addBox: { alignItems: 'center', justifyContent: 'center' },
   addIcon: { width: 24, height: 24 },
 
   signOut: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 7, marginTop: 56, paddingVertical: 10,
+    alignSelf: 'center', gap: 7, minHeight: 44, paddingHorizontal: 16,
   },
   signOutIcon: { width: 15, height: 15 },
-  signOutText: { color: colors.textMuted, fontSize: 15 },
+  signOutText: { color: colors.textDim, fontSize: 15 },
 
   // Formulario
   preview: { alignItems: 'center', marginBottom: 34 },

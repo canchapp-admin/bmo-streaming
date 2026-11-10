@@ -10,13 +10,15 @@ import {
 } from 'react-native'
 import { Image } from 'expo-image'
 import { LinearGradient } from 'expo-linear-gradient'
-import { Hero } from './Hero'
+import { Hero, HERO_H } from './Hero'
 import { type MediaItem, backdropUrl } from '@/lib/tmdb'
 import { colors } from '@/lib/theme'
+import { useReduceMotion } from '@/lib/useReduceMotion'
 
-const { width, height } = Dimensions.get('window')
-const HERO_H = height * 0.74
-const AUTO_MS = 7000
+const { width } = Dimensions.get('window')
+// 9s y no 7: alcanza para leer el título y los géneros con calma. Igual, si el
+// usuario toca el hero o arranca un tráiler, el carrusel deja de avanzar solo.
+const AUTO_MS = 9000
 const MAX_ITEMS = 6
 
 // Capa de fondo del pull-to-refresh: vive DETRÁS del FlatList, sin recorte
@@ -67,10 +69,24 @@ function PullStretchBackdrop({ uri, scrollY }: { uri: string | null; scrollY?: A
 export function HeroCarousel({
   items,
   scrollY,
+  live = true,
 }: {
   items: MediaItem[]
   scrollY?: Animated.Value
+  // El hero se ve (Home enfocado y sin scrollear más allá del hero). Fuera de
+  // la vista no avanza ni reproduce nada.
+  live?: boolean
 }) {
+  const reduceMotion = useReduceMotion()
+  // Dedo apoyado en el hero (leyendo, por swipear, tocando un botón).
+  const [touching, setTouching] = useState(false)
+  // Tráiler sonando: el carrusel espera a que termine en vez de cortarlo.
+  const [trailerPlaying, setTrailerPlaying] = useState(false)
+  // Una vez que el usuario tocó o deslizó el carrusel, ya lo está manejando
+  // él: no se vuelve a mover solo hasta que salga del hero y vuelva.
+  const [engaged, setEngaged] = useState(false)
+  useEffect(() => { if (!live) setEngaged(false) }, [live])
+
   const data = useMemo(
     () => items.filter((i) => i.backdrop_path).slice(0, MAX_ITEMS),
     [items]
@@ -88,36 +104,44 @@ export function HeroCarousel({
   const listRef = useRef<Animated.FlatList<MediaItem>>(null)
   const activeIdxRef = useRef(0)
   const [activeIdx, setActiveIdx] = useState(0)
-  const timerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
-
   function goTo(index: number) {
-    listRef.current?.scrollToOffset({ offset: index * width, animated: true })
+    listRef.current?.scrollToOffset({ offset: index * width, animated: !reduceMotion })
+    // Con la animación apagada no hay momentum: se fija el índice a mano.
+    if (reduceMotion) settle(index)
   }
 
-  function startTimer() {
-    clearInterval(timerRef.current)
-    if (data.length < 2) return
-    timerRef.current = setInterval(() => {
-      goTo((activeIdxRef.current + 1) % data.length)
-    }, AUTO_MS)
+  function next() {
+    if (data.length > 1) goTo((activeIdxRef.current + 1) % data.length)
   }
 
-  useEffect(() => {
-    startTimer()
-    return () => clearInterval(timerRef.current)
-  }, [data.length])
-
-  function onMomentumScrollEnd(e: NativeSyntheticEvent<NativeScrollEvent>) {
-    const idx = Math.round(e.nativeEvent.contentOffset.x / width)
+  function settle(idx: number) {
     activeIdxRef.current = idx
     setActiveIdx(idx)
-    startTimer() // reinicia el autoplay recién cuando el paginado terminó de asentar
+  }
+
+  // Avance automático: un solo timeout que se rearma cuando cambia el slide o
+  // cualquiera de las condiciones. Nunca con "Reducir movimiento" (el cambio
+  // solo de imagen es movimiento que el usuario no pidió).
+  const autoplay = live && !reduceMotion && !touching && !trailerPlaying && !engaged && data.length > 1
+  useEffect(() => {
+    if (!autoplay) return
+    const t = setTimeout(next, AUTO_MS)
+    return () => clearTimeout(t)
+  }, [autoplay, activeIdx, data.length])
+
+  function onMomentumScrollEnd(e: NativeSyntheticEvent<NativeScrollEvent>) {
+    settle(Math.round(e.nativeEvent.contentOffset.x / width))
   }
 
   if (!data.length) return null
 
   return (
-    <View style={styles.wrap}>
+    <View
+      style={styles.wrap}
+      onTouchStart={() => { setTouching(true); setEngaged(true) }}
+      onTouchEnd={() => setTouching(false)}
+      onTouchCancel={() => setTouching(false)}
+    >
       {/* w1280 y no 'original': cubre de sobra el ancho de un iPhone 3x
           (~1206 px) por una sexta parte de los bytes. Ver el comentario largo
           en Hero.tsx. */}
@@ -135,7 +159,6 @@ export function HeroCarousel({
         showsHorizontalScrollIndicator={false}
         decelerationRate="fast"
         bounces={false}
-        onScrollBeginDrag={() => clearInterval(timerRef.current)}
         onMomentumScrollEnd={onMomentumScrollEnd}
         onScroll={Animated.event(
           [{ nativeEvent: { contentOffset: { x: scrollX } } }],
@@ -174,7 +197,17 @@ export function HeroCarousel({
               // toques del Hero (Reproducir / +). Solo el activo los recibe.
               pointerEvents={index === activeIdx ? 'auto' : 'none'}
             >
-              <Hero item={item} active={index === activeIdx} scrollY={scrollY} />
+              <Hero
+                item={item}
+                active={index === activeIdx}
+                scrollY={scrollY}
+                live={live && !touching}
+                reduceMotion={reduceMotion}
+                onTrailerPlaying={index === activeIdx ? setTrailerPlaying : undefined}
+                // Al terminar el tráiler se pasa al siguiente, salvo que el
+                // usuario ya esté manejando el carrusel.
+                onTrailerEnded={() => { if (!engaged) next() }}
+              />
             </Animated.View>
           )
         }}

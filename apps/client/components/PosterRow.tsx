@@ -1,9 +1,8 @@
-import { View, Text, FlatList, StyleSheet } from 'react-native'
-import { SymbolView } from 'expo-symbols'
+import { View, FlatList, StyleSheet } from 'react-native'
 import { type MediaItem } from '@/lib/tmdb'
 import { PosterCard } from './PosterCard'
-import { Touchable } from './Touchable'
-import { rowHeading } from '@/lib/typography'
+import { RowHeading } from './RowHeading'
+import { useRowEndHaptic } from '@/lib/useRowEndHaptic'
 import { rowVirtualization, fixedItemLayout } from './rowVirtualization'
 
 // Ancho que ocupa cada tarjeta en la fila: los 124 del póster + su separación.
@@ -22,24 +21,20 @@ export function PosterRow({
   items: MediaItem[]
   onPressTitle?: () => void
 }) {
+  const onScroll = useRowEndHaptic()
   if (!items?.length) return null
 
   return (
     <View style={styles.row}>
-      {onPressTitle ? (
-        <Touchable style={styles.headingRow} scaleTo={0.98} haptic="light" onPress={onPressTitle}>
-          <Text style={styles.heading}>{title}</Text>
-          <SymbolView name="chevron.right" tintColor="#fff" style={styles.chevron} />
-        </Touchable>
-      ) : (
-        <Text style={styles.heading}>{title}</Text>
-      )}
+      <RowHeading title={title} onPress={onPressTitle} />
       <FlatList
         horizontal
         data={items}
         keyExtractor={(item) => String(item.id)}
         renderItem={({ item }) => <PosterCard item={item} />}
         showsHorizontalScrollIndicator={false}
+        onScroll={onScroll}
+        scrollEventThrottle={64}
         contentContainerStyle={styles.list}
         getItemLayout={fixedItemLayout(POSTER_ITEM_W)}
         {...rowVirtualization}
@@ -52,14 +47,6 @@ const styles = StyleSheet.create({
   row: {
     marginBottom: 24,
   },
-  heading: {
-    ...rowHeading,
-    marginBottom: 12,
-    paddingHorizontal: 20,
-  },
-  // El encabezado ya trae su propio paddingHorizontal, por eso acá no se repite.
-  headingRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  chevron: { width: 16, height: 16, marginBottom: 12 },
   list: {
     paddingHorizontal: 20,
   },

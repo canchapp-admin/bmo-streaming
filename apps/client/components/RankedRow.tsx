@@ -1,10 +1,11 @@
 import { View, Text, FlatList, StyleSheet } from 'react-native'
 import { Image } from 'expo-image'
-import { useRouter } from 'expo-router'
 import { type MediaItem, posterUrl, titleOf } from '@/lib/tmdb'
 import { prewarmTitle } from '@/lib/stream'
 import { Touchable } from './Touchable'
-import { rowHeading } from '@/lib/typography'
+import { TitleMenu, menuItemFrom } from './TitleMenu'
+import { RowHeading } from './RowHeading'
+import { useRowEndHaptic } from '@/lib/useRowEndHaptic'
 import { colors } from '@/lib/theme'
 import { rowVirtualization, fixedItemLayout } from './rowVirtualization'
 
@@ -13,16 +14,15 @@ const CARD_H = CARD_W * 1.5
 const NUM_W = 36
 
 function RankedCard({ item, rank }: { item: MediaItem; rank: number }) {
-  const router = useRouter()
   const uri = posterUrl(item.poster_path, 'w500')
   const isTv = item.media_type === 'tv' || (!!item.name && !item.title)
 
   return (
+    <TitleMenu item={menuItemFrom(item)}>
     <Touchable
       style={styles.card}
       haptic="light"
       onPressIn={() => prewarmTitle(item.id, isTv)}
-      onPress={() => router.push(`/title/${isTv ? 'tv' : 'movie'}/${item.id}` as never)}
     >
       <Text style={styles.num}>{rank}</Text>
       {uri ? (
@@ -33,21 +33,33 @@ function RankedCard({ item, rank }: { item: MediaItem; rank: number }) {
         </View>
       )}
     </Touchable>
+    </TitleMenu>
   )
 }
 
-export function RankedRow({ title, items }: { title: string; items: MediaItem[] }) {
+export function RankedRow({
+  title,
+  items,
+  onPressTitle,
+}: {
+  title: string
+  items: MediaItem[]
+  onPressTitle?: () => void
+}) {
+  const onScroll = useRowEndHaptic()
   if (!items?.length) return null
 
   return (
     <View style={styles.row}>
-      <Text style={styles.heading}>{title}</Text>
+      <RowHeading title={title} onPress={onPressTitle} />
       <FlatList
         horizontal
         data={items.slice(0, 10)}
         keyExtractor={(item) => String(item.id)}
         renderItem={({ item, index }) => <RankedCard item={item} rank={index + 1} />}
         showsHorizontalScrollIndicator={false}
+        onScroll={onScroll}
+        scrollEventThrottle={64}
         contentContainerStyle={styles.list}
         getItemLayout={fixedItemLayout(NUM_W - 6 + CARD_W + 8)}
         {...rowVirtualization}
@@ -58,11 +70,6 @@ export function RankedRow({ title, items }: { title: string; items: MediaItem[] 
 
 const styles = StyleSheet.create({
   row: { marginBottom: 24 },
-  heading: {
-    ...rowHeading,
-    marginBottom: 12,
-    paddingHorizontal: 20,
-  },
   list: { paddingHorizontal: 20, paddingLeft: 20 - NUM_W + 8 },
   card: {
     flexDirection: 'row',

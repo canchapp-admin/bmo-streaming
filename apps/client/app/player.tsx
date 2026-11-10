@@ -422,12 +422,36 @@ export default function PlayerScreen() {
     }).catch(() => {})
   }
 
+  // Último episodio de la temporada: si la serie sigue, encola el E1 de la
+  // temporada siguiente en "Seguir viendo". Antes, terminar un final de
+  // temporada sacaba la serie de la fila (el progreso del episodio visto se
+  // borra) y había que ir a buscarla. Solo si el E1 ya se emitió.
+  async function enqueueNextSeason() {
+    const next = (seasonN ?? 1) + 1
+    try {
+      const s = await tmdb.season(id, next)
+      const today = new Date().toISOString().slice(0, 10)
+      const first = s.episodes.find((e) => e.episode_number === 1)
+      if (!first?.air_date || first.air_date > today) return
+      await setUpNext({
+        id: Number(id),
+        media_type: 'tv',
+        title: title ?? '',
+        poster_path: params.poster ?? null,
+        backdrop_path: params.backdrop ?? null,
+        season: next,
+        episode: 1,
+      })
+    } catch {}
+  }
+
   // El usuario cerró el reproductor (botón X)
   function handleClose(watchedFraction: number) {
     if (isTv && watchedFraction >= FINISHED_RATIO && hasNextEpisode) {
       enqueueNext()
       setShowNext(true)
     } else {
+      if (isTv && watchedFraction >= FINISHED_RATIO) enqueueNextSeason()
       exitToBack()
     }
   }
@@ -435,6 +459,11 @@ export default function PlayerScreen() {
   // El video llegó al final
   function handleEnded() {
     if (isTv && hasNextEpisode) {
+      // Se encola ya, no recién al tocar "Reproducir" en la pantalla de
+      // siguiente: si el usuario sale desde ahí, la serie tiene que seguir en
+      // "Seguir viendo" apuntando al próximo episodio (el progreso del que
+      // terminó ya se borró al pasar el 92%).
+      enqueueNext()
       // Smart download: pre-descarga el episodio siguiente al siguiente
       smartDownloadNext({
         id: Number(id),
@@ -447,6 +476,7 @@ export default function PlayerScreen() {
       })
       setShowNext(true)
     } else {
+      if (isTv) enqueueNextSeason()
       exitToBack()
     }
   }

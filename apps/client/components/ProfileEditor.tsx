@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import {
-  View, Text, StyleSheet, TextInput, ScrollView,
+  View, Text, StyleSheet, TextInput, ScrollView, Switch,
   ActivityIndicator, KeyboardAvoidingView, Platform,
 } from 'react-native'
 import { SymbolView } from 'expo-symbols'
@@ -20,7 +20,7 @@ export function ProfileEditor({
   canDelete, insets,
 }: {
   profile: Profile
-  onSave: (patch: { name?: string; avatar?: string }) => Promise<boolean>
+  onSave: (patch: { name?: string; avatar?: string; is_kids?: boolean }) => Promise<boolean>
   onManagePin: () => void
   onDelete: () => void
   onClose: () => void
@@ -29,16 +29,17 @@ export function ProfileEditor({
 }) {
   const [name, setName] = useState(profile.name)
   const [avatar, setAvatar] = useState(profile.avatar)
+  const [kids, setKids] = useState(!!profile.is_kids)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const dirty = name.trim() !== profile.name || avatar !== profile.avatar
+  const dirty = name.trim() !== profile.name || avatar !== profile.avatar || kids !== !!profile.is_kids
   const canSave = dirty && name.trim().length > 0 && !busy
 
   async function save() {
     if (!canSave) return
     setBusy(true); setError(null)
-    const ok = await onSave({ name: name.trim(), avatar })
+    const ok = await onSave({ name: name.trim(), avatar, is_kids: kids })
     setBusy(false)
     if (!ok) { setError('No se pudo guardar. ¿Ya usas ese nombre?'); return }
     onClose()
@@ -111,6 +112,24 @@ export function ProfileEditor({
             />
           </View>
         </View>
+
+        {/* Perfil infantil: el Home solo muestra animación, familia e
+            infantil, sin terror, suspenso ni crimen. */}
+        <Text style={styles.sectionLabel}>Contenido</Text>
+        <View style={styles.group}>
+          <View style={styles.row}>
+            <SymbolView name="figure.and.child.holdinghands" tintColor={kids ? '#fff' : colors.textMuted} style={styles.rowIcon} />
+            <Text style={styles.rowLabel}>Perfil infantil</Text>
+            <Switch
+              value={kids}
+              onValueChange={setKids}
+              accessibilityLabel="Perfil infantil"
+            />
+          </View>
+        </View>
+        <Text style={styles.hint}>
+          Muestra solo títulos de animación, familia e infantiles en el Inicio.
+        </Text>
 
         <Text style={styles.sectionLabel}>Seguridad</Text>
         <View style={styles.group}>

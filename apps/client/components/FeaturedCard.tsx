@@ -1,10 +1,10 @@
 import { Text, StyleSheet, View, Dimensions } from 'react-native'
 import { Image } from 'expo-image'
 import { LinearGradient } from 'expo-linear-gradient'
-import { useRouter } from 'expo-router'
 import { type MediaItem, backdropUrl, titleOf, genreNames } from '@/lib/tmdb'
 import { prewarmTitle } from '@/lib/stream'
 import { Touchable } from './Touchable'
+import { TitleMenu, menuItemFrom } from './TitleMenu'
 import { colors } from '@/lib/theme'
 
 const { width } = Dimensions.get('window')
@@ -12,7 +12,6 @@ const CARD_W = width - 32
 const CARD_H = CARD_W * 0.56
 
 export function FeaturedCard({ item }: { item: MediaItem }) {
-  const router = useRouter()
   const isTv = item.media_type === 'tv' || (!!item.name && !item.title)
   // Card casi a todo el ancho → ~1074px en 3x: w1280 nítido (w780 quedaba blando).
   const uri = backdropUrl(item.backdrop_path, 'w1280')
@@ -20,12 +19,12 @@ export function FeaturedCard({ item }: { item: MediaItem }) {
   const type = isTv ? 'Serie' : 'Película'
 
   return (
+    <TitleMenu item={menuItemFrom(item)}>
     <Touchable
       scaleTo={0.98}
       haptic="light"
       style={styles.card}
       onPressIn={() => prewarmTitle(item.id, isTv)}
-      onPress={() => router.push(`/title/${isTv ? 'tv' : 'movie'}/${item.id}` as never)}
     >
       <View style={styles.imageWrap}>
         {uri ? (
@@ -50,6 +49,7 @@ export function FeaturedCard({ item }: { item: MediaItem }) {
         )}
       </View>
     </Touchable>
+    </TitleMenu>
   )
 }
 

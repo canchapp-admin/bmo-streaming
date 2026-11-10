@@ -1,3 +1,4 @@
+import * as Haptics from 'expo-haptics'
 import { useLocalSearchParams, Stack, useRouter, useFocusEffect } from 'expo-router'
 import { useCallback, useEffect, useState } from 'react'
 import {
@@ -133,6 +134,9 @@ export default function TitleScreen() {
     if (!data) return
     const added = await toggleMyList(toLibraryItem({ ...data, media_type: isTv ? 'tv' : 'movie' }))
     setInList(added)
+    Haptics.notificationAsync(
+      added ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Warning,
+    ).catch(() => {})
   }
 
   const certification = data ? certificationOf(data) : null
@@ -388,7 +392,7 @@ export default function TitleScreen() {
               normal, no un Touchable.) */}
           <View style={styles.secondaryRow}>
             <View style={styles.secondarySlot}>
-              <Touchable scaleTo={0.95} haptic="light" style={styles.secondaryBtn} onPress={onToggleList}>
+              <Touchable scaleTo={0.95} style={styles.secondaryBtn} onPress={onToggleList}>
                 <SymbolView
                   name={inList ? 'checkmark' : 'plus'}
                   tintColor="#fff"

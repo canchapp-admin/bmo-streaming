@@ -3,19 +3,25 @@ import { Image } from 'expo-image'
 import { LinearGradient } from 'expo-linear-gradient'
 import { SymbolView } from 'expo-symbols'
 import { useRouter } from 'expo-router'
-import { backdropUrl, posterUrl } from '@/lib/tmdb'
+import { useEffect, useState } from 'react'
+import { backdropUrl, posterUrl, tmdb } from '@/lib/tmdb'
 import { removeProgress, type Progress } from '@/lib/library'
 import { prewarmTitle } from '@/lib/stream'
 import { Touchable } from './Touchable'
+import { TitleMenu } from './TitleMenu'
 import { colors } from '@/lib/theme'
 
 const CARD_WIDTH = 300
 
-function remainingLabel(p: Progress) {
+function remainingLabel(p: Progress, episodeName?: string | null) {
   const isTv = p.media_type === 'tv' && p.season
-  // "Próximo a ver" (encolado): duration 0 → aún no empezado
+  // "Próximo a ver" (encolado al terminar el anterior): duration 0. Se dice
+  // "Siguiente" y el nombre del episodio, no "Empezar": así se entiende que
+  // es lo que sigue y no algo que dejaste sin arrancar.
   if (p.duration <= 0) {
-    return isTv ? `T${p.season}, E${p.episode} · Empezar` : 'Empezar'
+    if (!isTv) return 'Empezar'
+    const ep = `T${p.season}, E${p.episode}`
+    return episodeName ? `Siguiente · ${ep} · ${episodeName}` : `Siguiente · ${ep}`
   }
   const rem = Math.max(0, p.duration - p.position)
   const mins = Math.round(rem / 60)
@@ -37,6 +43,23 @@ export function ContinueCard({
   // Tarjeta de 300pt → ~900px en 3x: w1280 la deja nítida (w780 quedaba blando).
   const img = backdropUrl(item.backdrop_path, 'w1280') ?? posterUrl(item.poster_path, 'w500')
   const ratio = item.duration > 0 ? item.position / item.duration : 0
+  const upNext = item.media_type === 'tv' && item.duration <= 0 && item.season != null
+
+  // Nombre del episodio que sigue: solo para las tarjetas "Siguiente" (pocas),
+  // así no se pide la temporada de cada serie de la fila.
+  const [episodeName, setEpisodeName] = useState<string | null>(null)
+  useEffect(() => {
+    if (!upNext) return
+    let alive = true
+    tmdb.season(String(item.id), item.season!)
+      .then((s) => {
+        const ep = s.episodes.find((e) => e.episode_number === item.episode)
+        if (alive && ep?.name) setEpisodeName(ep.name)
+      })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [upNext, item.id, item.season, item.episode])
+  const label = remainingLabel(item, episodeName)
 
   function resume() {
     router.push({
@@ -54,26 +77,40 @@ export function ContinueCard({
     })
   }
 
+  async function removeFromContinue() {
+    await removeProgress(item.id, item.media_type)
+    onRemove?.()
+  }
+
   function more() {
     Alert.alert(item.title, undefined, [
       {
         text: 'Quitar de Seguir viendo',
         style: 'destructive',
-        onPress: async () => {
-          await removeProgress(item.id, item.media_type)
-          onRemove?.()
-        },
+        onPress: removeFromContinue,
       },
       { text: 'Cancelar', style: 'cancel' },
     ])
   }
 
+  // Toque corto: reanuda (no abre la ficha). Mantener apretado: vista previa
+  // con el menú del sistema, que suma ir a la ficha y quitar de esta fila.
   return (
+    <TitleMenu
+      item={item}
+      onPress={resume}
+      extra={[
+        { title: 'Ver detalles', icon: 'info.circle', onPress: () => router.push(`/title/${item.media_type}/${item.id}` as never) },
+        { title: 'Quitar de Seguir viendo', icon: 'xmark.circle', destructive: true, onPress: removeFromContinue },
+      ]}
+    >
     <Touchable
       style={styles.card}
       haptic="light"
       onPressIn={() => prewarmTitle(item.id, item.media_type === 'tv', item.season, item.episode)}
-      onPress={resume}
+      accessibilityRole="button"
+      accessibilityLabel={`${upNext ? 'Ver' : 'Reanudar'} ${item.title}. ${label}`}
+      accessibilityHint="Mantén presionado para más opciones"
     >
       {img ? (
         <Image source={img} style={styles.thumb} contentFit="cover" transition={150} cachePolicy="memory-disk" recyclingKey={`${item.media_type}-${item.id}`} />
@@ -88,11 +125,14 @@ export function ContinueCard({
       <View style={styles.bottom}>
         <View style={styles.left}>
           <SymbolView name="play.fill" tintColor="#fff" style={styles.playIcon} />
-          <View style={styles.track}>
-            <View style={[styles.fill, { width: `${Math.round(ratio * 100)}%` }]} />
-          </View>
-          <Text style={styles.time} numberOfLines={1}>
-            {remainingLabel(item)}
+          {/* Sin barra en "Siguiente": una barra vacía no informa nada. */}
+          {!upNext && (
+            <View style={styles.track}>
+              <View style={[styles.fill, { width: `${Math.round(ratio * 100)}%` }]} />
+            </View>
+          )}
+          <Text style={[styles.time, upNext && styles.timeNext]} numberOfLines={1}>
+            {label}
           </Text>
         </View>
         <Touchable scaleTo={0.85} haptic="light" onPress={more} hitSlop={12}>
@@ -100,6 +140,7 @@ export function ContinueCard({
         </Touchable>
       </View>
     </Touchable>
+    </TitleMenu>
   )
 }
 
@@ -134,5 +175,7 @@ const styles = StyleSheet.create({
   },
   fill: { height: 3, borderRadius: 2, backgroundColor: '#fff' },
   time: { color: '#fff', fontSize: 13, fontWeight: '600' },
+  // Sin barra, el texto ocupa el ancho y se recorta con … si el nombre es largo.
+  timeNext: { flex: 1 },
   more: { width: 20, height: 20 },
 })

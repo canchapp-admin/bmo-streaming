@@ -4,6 +4,7 @@ import { Image } from 'expo-image'
 import { LinearGradient } from 'expo-linear-gradient'
 import { SymbolView } from 'expo-symbols'
 import { useRouter } from 'expo-router'
+import * as Haptics from 'expo-haptics'
 import {
   tmdb,
   type MediaItem,
@@ -12,18 +13,49 @@ import {
   isUpcoming,
   logoUrl,
   genreNames,
+  trailerKey,
 } from '@/lib/tmdb'
 import { isInMyList, toggleMyList, toLibraryItem } from '@/lib/library'
 import { prewarmTitle } from '@/lib/stream'
 import { Touchable } from './Touchable'
+import { Glass } from './Glass'
+import { HeroTrailer } from './HeroTrailer'
 import { colors } from '@/lib/theme'
 
 const { width, height } = Dimensions.get('window')
-const HERO_H = height * 0.74
+// 64% del alto (antes 74%): con el hero más bajo, "Seguir viendo" asoma sin
+// hacer scroll, y es la fila que más se usa. Lo comparte HeroCarousel.
+export const HERO_H = height * 0.64
 const KEN_BURNS_MS = 9000 // más lento que el auto-advance del carrusel (7s) → nunca se nota el corte
 const KEN_BURNS_SCALE = 1.09
+// Cuánto hay que quedarse quieto mirando el hero antes de que arranque el
+// tráiler. Lo bastante corto para que se note, lo bastante largo para no
+// dispararlo al pasar de largo.
+const TRAILER_IDLE_MS = 3000
 
-export function Hero({ item, active, scrollY }: { item: MediaItem; active: boolean; scrollY?: Animated.Value }) {
+// Claves de tráiler ya buscadas: volver al Home o al mismo slide no repite la
+// llamada. `null` = ese título no tiene tráiler.
+const trailerCache = new Map<string, string | null>()
+
+export function Hero({
+  item,
+  active,
+  scrollY,
+  live = false,
+  reduceMotion = false,
+  onTrailerPlaying,
+  onTrailerEnded,
+}: {
+  item: MediaItem
+  active: boolean
+  scrollY?: Animated.Value
+  // El hero está a la vista y nadie lo está tocando: solo así arranca el
+  // tráiler. Lo decide el carrusel (pantalla enfocada, hero sin scrollear).
+  live?: boolean
+  reduceMotion?: boolean
+  onTrailerPlaying?: (playing: boolean) => void
+  onTrailerEnded?: () => void
+}) {
   const router = useRouter()
   const isTv = item.media_type === 'tv' || (!!item.name && !item.title)
   // w1280 y NO 'original': el hero ocupa el ancho de la pantalla, que en un
@@ -65,7 +97,8 @@ export function Hero({ item, active, scrollY }: { item: MediaItem; active: boole
   // como Apple TV/Netflix) — se resetea al desactivarse para volver fresco.
   const kenBurns = useRef(new Animated.Value(1)).current
   useEffect(() => {
-    if (!active) {
+    // Con "Reducir movimiento" la imagen queda quieta.
+    if (!active || reduceMotion) {
       kenBurns.setValue(1)
       return
     }
@@ -77,7 +110,34 @@ export function Hero({ item, active, scrollY }: { item: MediaItem; active: boole
     })
     anim.start()
     return () => anim.stop()
-  }, [active])
+  }, [active, reduceMotion])
+
+  // Tráiler en silencio tras unos segundos quieto, como la app Apple TV. Si el
+  // hero deja de estar "en vivo" (scroll, otra pantalla, un toque) se quita, y
+  // vuelve a esperar desde cero. Nunca con "Reducir movimiento": un video que
+  // arranca solo es justo lo que esa opción pide evitar.
+  const [trailer, setTrailer] = useState<string | null>(null)
+  const canTrail = active && live && !reduceMotion && !isUpcoming(item)
+  useEffect(() => {
+    if (!canTrail) { setTrailer(null); return }
+    let cancelled = false
+    const type = isTv ? 'tv' : 'movie'
+    const cacheKey = `${type}:${item.id}`
+    const timer = setTimeout(async () => {
+      let key = trailerCache.get(cacheKey)
+      if (key === undefined) {
+        try {
+          const d = await (isTv ? tmdb.tv : tmdb.movie)(String(item.id))
+          key = trailerKey(d.videos?.results)
+        } catch {
+          key = null
+        }
+        trailerCache.set(cacheKey, key)
+      }
+      if (!cancelled && key) setTrailer(key)
+    }, TRAILER_IDLE_MS)
+    return () => { cancelled = true; clearTimeout(timer) }
+  }, [canTrail, item.id, isTv])
 
   function open() {
     router.push(`/title/${isTv ? 'tv' : 'movie'}/${item.id}` as never)
@@ -102,6 +162,10 @@ export function Hero({ item, active, scrollY }: { item: MediaItem; active: boole
       toLibraryItem({ ...item, media_type: isTv ? 'tv' : 'movie' })
     )
     setInList(added)
+    // Confirmación táctil, la misma que en el menú contextual de las tarjetas.
+    Haptics.notificationAsync(
+      added ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Warning,
+    ).catch(() => {})
   }
 
   const meta = [isTv ? 'Serie' : 'Película', ...genreNames(item.genre_ids)].join('  ·  ')
@@ -123,6 +187,15 @@ export function Hero({ item, active, scrollY }: { item: MediaItem; active: boole
       {bg && (
         <Animated.View style={[StyleSheet.absoluteFill, bgTransform, { opacity: bgOpacity }]}>
           <Image source={bg} style={styles.bg} contentFit="cover" transition={300} />
+          {trailer && (
+            <HeroTrailer
+              youtubeKey={trailer}
+              width={width}
+              height={HERO_H}
+              onPlaying={onTrailerPlaying}
+              onEnded={() => { setTrailer(null); onTrailerEnded?.() }}
+            />
+          )}
           {/* El degradado va DENTRO del transform para estirarse junto a la imagen */}
           <LinearGradient
             colors={['rgba(0,0,0,0.25)', 'transparent', 'rgba(0,0,0,0.5)', '#000']}
@@ -133,30 +206,30 @@ export function Hero({ item, active, scrollY }: { item: MediaItem; active: boole
       )}
 
       <View style={styles.content}>
-        <View style={styles.trendingBadge}>
-          <Text style={styles.trendingText}>Tendencia</Text>
-        </View>
+        {/* Etiqueta tipográfica, como en la app Apple TV: sin caja ni borde.
+            Es contenido, no un control, así que no lleva vidrio. */}
+        <Text style={styles.trendingText}>Tendencia</Text>
 
         <View style={styles.logoBox}>
           {logo ? (
             <Image source={logo} style={styles.logo} contentFit="contain" transition={400} />
           ) : (
-            <Text style={styles.title} numberOfLines={2}>
+            <Text style={styles.title} numberOfLines={2} adjustsFontSizeToFit maxFontSizeMultiplier={1.3}>
               {titleOf(item)}
             </Text>
           )}
         </View>
 
-        <Text style={styles.meta} numberOfLines={1}>
+        <Text style={styles.meta} numberOfLines={1} maxFontSizeMultiplier={1.6}>
           {meta}
         </Text>
 
         <View style={styles.buttons}>
           {upcoming ? (
-            <View style={styles.soonBtn}>
+            <Glass radius={27} variant="clear" style={styles.soonBtn}>
               <SymbolView name="clock" tintColor={colors.text} style={styles.playIcon} />
               <Text style={styles.soonText}>Próximamente</Text>
-            </View>
+            </Glass>
           ) : (
             <Touchable
               scaleTo={0.95}
@@ -169,12 +242,22 @@ export function Hero({ item, active, scrollY }: { item: MediaItem; active: boole
               <Text style={styles.playText}>Reproducir</Text>
             </Touchable>
           )}
-          <Touchable scaleTo={0.9} haptic="light" style={styles.addBtn} onPress={toggleList}>
-            <SymbolView
-              name={inList ? 'checkmark' : 'plus'}
-              tintColor="#fff"
-              style={styles.addIcon}
-            />
+          {/* Control sobre el póster: vidrio "clear" (deja ver la imagen); el
+              degradado del hero ya hace de capa de oscurecimiento que piden
+              las HIG para que el ícono se lea. */}
+          <Touchable
+            scaleTo={0.92}
+            onPress={toggleList}
+            accessibilityRole="button"
+            accessibilityLabel={inList ? 'Quitar de Mi lista' : 'Agregar a Mi lista'}
+          >
+            <Glass radius={26} interactive variant="clear" style={styles.addBtn}>
+              <SymbolView
+                name={inList ? 'checkmark' : 'plus'}
+                tintColor="#fff"
+                style={styles.addIcon}
+              />
+            </Glass>
           </Touchable>
         </View>
       </View>
@@ -199,15 +282,10 @@ const styles = StyleSheet.create({
   gradient: { ...StyleSheet.absoluteFillObject },
   tapArea: { position: 'absolute', top: 0, left: 0, right: 0, height: '60%' },
   content: { position: 'absolute', bottom: 28, left: 0, right: 0, alignItems: 'center', paddingHorizontal: 20 },
-  trendingBadge: {
-    borderWidth: 1,
-    borderColor: colors.textMuted,
-    borderRadius: 20,
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    marginBottom: 10,
+  trendingText: {
+    color: colors.text, fontSize: 12, fontWeight: '700',
+    letterSpacing: 1.4, textTransform: 'uppercase', marginBottom: 12, opacity: 0.85,
   },
-  trendingText: { color: '#fff', fontSize: 12, fontWeight: '700', letterSpacing: 0.2 },
   logoBox: { height: 100, justifyContent: 'flex-end', alignItems: 'center' },
   logo: { width: width * 0.72, height: 100 },
   title: { fontSize: 34, fontWeight: '800', color: '#fff', letterSpacing: -0.5, textAlign: 'center' },
@@ -227,8 +305,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: colors.border,
-    borderRadius: 27,
     paddingVertical: 14,
     paddingHorizontal: 32,
     gap: 8,
@@ -239,8 +315,6 @@ const styles = StyleSheet.create({
   addBtn: {
     width: 52,
     height: 52,
-    borderRadius: 26,
-    backgroundColor: colors.border,
     alignItems: 'center',
     justifyContent: 'center',
   },

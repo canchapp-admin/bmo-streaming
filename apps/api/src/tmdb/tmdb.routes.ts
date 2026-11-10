@@ -406,6 +406,16 @@ export const tmdbRoutes = new Elysia({ prefix: '/tmdb' })
     { params: t.Object({ type: t.String(), id: t.String() }) }
   )
 
+  // "Una peli cortita" del Home: películas populares de hora y media o menos.
+  // El piso de 60 min deja afuera cortos y especiales; el de votos, rarezas.
+  .get('/short-movies', () =>
+    tmdbService.discoverSorted('movie', 'popularity.desc', {
+      'with_runtime.gte': 60,
+      'with_runtime.lte': 95,
+      'vote_count.gte': 300,
+    })
+  )
+
   // Discover por género (cuadrícula de una categoría)
   .get(
     '/discover/:type/:genreId',

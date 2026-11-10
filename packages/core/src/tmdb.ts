@@ -212,6 +212,7 @@ export const tmdb = {
   categories: () => t<Category[]>('/tmdb/categories'),
   discover: (type: 'movie' | 'tv', genreId: string | number) =>
     t<Paged<MediaItem>>(`/tmdb/discover/${type}/${genreId}`),
+  shortMovies: () => t<Paged<MediaItem>>('/tmdb/short-movies'),
   genre: (type: 'movie' | 'tv', id: string | number) =>
     t<GenreDetail>(`/tmdb/genre/${type}/${id}`),
   studio: (key: string) => t<StudioDetail>(`/tmdb/studio/${key}`),

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   View,
   ActivityIndicator,
@@ -9,19 +9,26 @@ import {
 import { useFocusEffect, useRouter } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { SymbolView } from 'expo-symbols'
-import { tmdb } from '@/lib/tmdb'
+import { tmdb, type MediaItem } from '@/lib/tmdb'
 import { useAsync } from '@/lib/useAsync'
 import { PosterRow } from '@/components/PosterRow'
+import { PlatformRow } from '@/components/PlatformRow'
+import { RowHeading } from '@/components/RowHeading'
 import { BackdropRow } from '@/components/BackdropRow'
 import { RankedRow } from '@/components/RankedRow'
 import { FeaturedCard } from '@/components/FeaturedCard'
 import { HeroCarousel } from '@/components/HeroCarousel'
+import { HERO_H } from '@/components/Hero'
 import { ContinueRow } from '@/components/ContinueRow'
 import { HomeSkeleton } from '@/components/Skeleton'
 import { Touchable } from '@/components/Touchable'
+import { Glass } from '@/components/Glass'
+import { LinearGradient } from 'expo-linear-gradient'
 import { EmptyState } from '@/components/EmptyState'
-import { screenTitle, rowHeading } from '@/lib/typography'
-import { getContinueWatching, type Progress } from '@/lib/library'
+import { screenTitle } from '@/lib/typography'
+import { getContinueWatching, getMyList, type LibraryItem, type Progress } from '@/lib/library'
+import { forProfile } from '@/lib/kidsFilter'
+import { refreshMyList } from '@/lib/myListStore'
 import { useAuth } from '@/lib/auth'
 import { ProfileAvatar } from '@/components/ProfileAvatar'
 import { dedupeRows, heroIds } from '@/lib/dedupeRows'
@@ -31,6 +38,10 @@ import { colors } from '@/lib/theme'
 // Cuántos títulos rota el hero. Tiene que coincidir con MAX_ITEMS de
 // HeroCarousel: es la lista que se excluye del resto del Home.
 const HERO_ITEMS = 6
+// Desde qué scroll empieza a aparecer el borde superior: cuando el hero ya
+// subió lo suficiente como para que debajo de la hora asome una fila.
+const HERO_FADE_START = 380
+const GENRE = { comedy: 35, horror: 27, family: 10751 }
 
 export default function HomeScreen() {
   const router = useRouter()
@@ -39,13 +50,71 @@ export default function HomeScreen() {
   const scrollY = useRef(new Animated.Value(0)).current
 
   const { data, loading, error, refetch } = useAsync(() => tmdb.home())
-  const { data: collections } = useAsync(() => tmdb.collections())
+  // Filas por género y estado de ánimo. Cada una por separado (allSettled):
+  // si una falla —o la API todavía no tiene /short-movies— solo esa no se
+  // dibuja. Se piden aparte del catálogo principal para no demorar el hero.
+  const { data: moods } = useAsync(async () => {
+    const [comedy, horror, family, short] = await Promise.allSettled([
+      tmdb.discover('movie', GENRE.comedy),
+      tmdb.discover('movie', GENRE.horror),
+      tmdb.discover('movie', GENRE.family),
+      tmdb.shortMovies(),
+    ])
+    const ok = (r: PromiseSettledResult<{ results: MediaItem[] }>) =>
+      r.status === 'fulfilled' ? r.value.results.map((i) => ({ ...i, media_type: 'movie' as const })) : []
+    return { comedy: ok(comedy), horror: ok(horror), family: ok(family), short: ok(short) }
+  })
+
+  const kids = !!profile?.is_kids
 
   const [watching, setWatching] = useState<Progress[]>([])
+  const [myList, setMyList] = useState<MediaItem[]>([])
   const loadWatching = useCallback(() => {
     getContinueWatching().then(setWatching)
+    getMyList().then((l) => setMyList(l.map(fromLibrary)))
+    // El menú de cada tarjeta muestra si el título está en Mi lista: se relee
+    // al volver al Home por si cambió desde la ficha o el hero.
+    refreshMyList()
   }, [])
   useFocusEffect(loadWatching)
+
+  // El hero solo "vive" (avanza, reproduce el tráiler) si el Home está en
+  // pantalla y el hero todavía se ve: al bajar a las filas o abrir una ficha
+  // se queda quieto, sin gastar red ni batería en algo que nadie mira.
+  const [focused, setFocused] = useState(true)
+  useFocusEffect(useCallback(() => {
+    setFocused(true)
+    return () => setFocused(false)
+  }, []))
+  const [heroInView, setHeroInView] = useState(true)
+  const heroInViewRef = useRef(true)
+  const onScrollY = useCallback((y: number) => {
+    const inView = y < HERO_H * 0.5
+    if (inView !== heroInViewRef.current) {
+      heroInViewRef.current = inView
+      setHeroInView(inView)
+    }
+  }, [])
+
+  // "Porque viste X": parecidos al último título que se miró. Se recalcula solo
+  // cuando cambia ese título, no en cada foco del Home.
+  const seed = watching[0]
+  const [because, setBecause] = useState<{ title: string; items: MediaItem[] } | null>(null)
+  useEffect(() => {
+    if (!seed) { setBecause(null); return }
+    let alive = true
+    const load = seed.media_type === 'tv' ? tmdb.tv : tmdb.movie
+    load(String(seed.id))
+      .then((d) => {
+        if (!alive) return
+        const items = (d.similar?.results ?? [])
+          .filter((i) => i.poster_path)
+          .map((i) => ({ ...i, media_type: seed.media_type }))
+        setBecause({ title: seed.title, items })
+      })
+      .catch(() => alive && setBecause(null))
+    return () => { alive = false }
+  }, [seed?.id, seed?.media_type])
 
   if (loading) {
     return <HomeSkeleton />
@@ -68,44 +137,56 @@ export default function HomeScreen() {
     outputRange: [1, 0],
     extrapolate: 'clamp',
   })
+  // Borde superior que aparece cuando el hero ya se fue: sin él, la hora y la
+  // batería quedan encima de pósters de cualquier color. Es el "scroll edge
+  // effect" de iOS 26: oscurece solo la franja de arriba, no toda la pantalla.
+  const edgeOpacity = scrollY.interpolate({
+    inputRange: [HERO_FADE_START, HERO_FADE_START + 80],
+    outputRange: [0, 1],
+    extrapolate: 'clamp',
+  })
 
   // Item destacado: primer trending con backdrop + overview
-  const spotlight = data.trending.results.find((i) => i.backdrop_path && i.overview)
+  // Perfiles infantiles: todo el catálogo del Home pasa por el mismo filtro
+  // (hero, destacado, filas y recomendaciones). Mi lista y Seguir viendo no:
+  // son títulos que el propio perfil eligió.
+  const pick = (items: MediaItem[]) => forProfile(items, kids)
+  const trending = pick(data.trending.results)
+  const spotlight = trending.find((i) => i.backdrop_path && i.overview)
 
   // El Home mezcla fuentes que se solapan mucho (lo que es tendencia también es
   // popular, y lo popular suele estar en Netflix): medido contra la API real,
   // el 26% de las tarjetas eran un título ya visto más arriba. Se reparte una
   // sola vez cada título, respetando el orden de las filas como prioridad.
+  // Menos filas y mejor elegidas. Las cinco "Lo mejor de Netflix / HBO / …"
+  // se fueron (en BMO está todo; ahora son tarjetas en "Plataformas") y en su
+  // lugar hay filas por estado de ánimo, que responden a "¿qué tengo ganas de
+  // ver?" mejor que "¿en qué servicio está?".
   const rows = dedupeRows(
     [
-      { key: 'trending', items: data.trending.results },
-      { key: 'topMovies', items: data.topMovies.results },
-      ...(collections
-        ? [
-            { key: 'netflix', items: collections.netflix.results },
-            { key: 'hbo', items: collections.hbo.results },
-            { key: 'appletv', items: collections.appletv.results },
-            { key: 'disney', items: collections.disney.results },
-            { key: 'prime', items: collections.prime.results },
-          ]
-        : []),
-      { key: 'popularMovies', items: data.popularMovies.results },
-      { key: 'popularSeries', items: data.popularSeries.results },
-      // Series mejor valoradas: fuente propia. Antes esta fila reusaba
-      // data.topMovies —el mismo array que 'Top 10 películas'— así que las
-      // dos mostraban lo mismo con distinto título.
-      { key: 'topSeries', items: data.topSeries?.results ?? [] },
+      { key: 'trending', items: trending },
+      { key: 'topMovies', items: pick(data.topMovies.results) },
+      { key: 'comedy', items: pick(moods?.comedy ?? []) },
+      { key: 'popularSeries', items: pick(data.popularSeries.results) },
+      { key: 'short', items: pick(moods?.short ?? []) },
+      // Perfiles infantiles: "En familia" ocupa el lugar de "Terror".
+      kids
+        ? { key: 'last', items: pick(moods?.family ?? []) }
+        : { key: 'last', items: moods?.horror ?? [] },
     ],
     {
       // El hero y el destacado ya ocupan la parte alta de la pantalla: volver a
       // verlos en una fila unos centímetros más abajo es la repetición más
       // evidente de todas.
       exclude: [
-        ...heroIds(data.trending.results, HERO_ITEMS),
+        ...heroIds(trending, HERO_ITEMS),
         ...(spotlight ? [spotlight.id] : []),
       ],
     }
   )
+
+  const browse = (genreId: number, name: string) => () =>
+    router.push({ pathname: '/browse/[type]/[id]', params: { type: 'movie', id: String(genreId), name } })
 
   return (
     <View style={styles.container}>
@@ -115,13 +196,16 @@ export default function HomeScreen() {
         scrollEventThrottle={16}
         onScroll={Animated.event(
           [{ nativeEvent: { contentOffset: { y: scrollY } } }],
-          { useNativeDriver: true }
+          {
+            useNativeDriver: true,
+            listener: (e: { nativeEvent: { contentOffset: { y: number } } }) =>
+              onScrollY(e.nativeEvent.contentOffset.y),
+          }
         )}
       >
-        <HeroCarousel items={data.trending.results} scrollY={scrollY} />
+        <HeroCarousel items={trending} scrollY={scrollY} live={focused && heroInView} />
 
         <View style={styles.rows}>
-          {/* Continuar viendo */}
           <Reveal index={0}>
             <ContinueRow
               items={watching}
@@ -130,78 +214,107 @@ export default function HomeScreen() {
             />
           </Reveal>
 
-          {/* Tendencias: fila de posters */}
-          <Reveal index={1}><PosterRow title="Tendencias" items={rows.trending} /></Reveal>
+          {/* Mi lista: lo que el perfil guardó, a mano en el Home y no solo
+              en Biblioteca. PosterRow no se dibuja si está vacía. */}
+          <Reveal index={1}>
+            <PosterRow title="Mi lista" items={myList} onPressTitle={() => router.navigate('/library')} />
+          </Reveal>
 
-          {/* Spotlight: tarjeta grande con descripción */}
+          <Reveal index={2}><PosterRow title="Tendencias" items={rows.trending} /></Reveal>
+
+          {/* Porque viste X: parecidos al último título en curso */}
+          {because && seed && (
+            <Reveal index={3}>
+              <PosterRow
+                title={`Porque viste ${because.title}`}
+                items={pick(because.items)}
+                onPressTitle={() => router.push(`/title/${seed.media_type}/${seed.id}` as never)}
+              />
+            </Reveal>
+          )}
+
           {spotlight && (
-            <Reveal index={2}>
+            <Reveal index={4}>
               <View style={styles.featuredWrap}>
-                <Text style={styles.rowTitle}>Destacado hoy</Text>
+                <RowHeading title="Destacado hoy" />
                 <FeaturedCard item={spotlight} />
               </View>
             </Reveal>
           )}
 
-          {/* Top 10: fila rankeada */}
-          <Reveal index={2}><RankedRow title="Top 10 películas" items={rows.topMovies} /></Reveal>
+          <Reveal index={5}><RankedRow title="Top 10 películas" items={rows.topMovies} /></Reveal>
 
-          {collections && (
-            <>
-              {/* Netflix: posters */}
-              <Reveal index={3}><PosterRow title="Lo mejor de Netflix" items={rows.netflix} /></Reveal>
+          <Reveal index={6}><PlatformRow kids={kids} /></Reveal>
 
-              {/* HBO: landscape backdrops */}
-              <Reveal index={4}><BackdropRow title="Lo mejor de HBO Max" items={rows.hbo} /></Reveal>
+          <Reveal index={7}>
+            <PosterRow title="Para reírse" items={rows.comedy} onPressTitle={browse(GENRE.comedy, 'Comedia')} />
+          </Reveal>
 
-              {/* Apple TV+: posters */}
-              <Reveal index={5}><PosterRow title="Lo mejor de Apple TV+" items={rows.appletv} /></Reveal>
+          <Reveal index={8}><RankedRow title="Series del momento" items={rows.popularSeries} /></Reveal>
 
-              {/* Disney+: landscape backdrops */}
-              <Reveal index={6}><BackdropRow title="Lo mejor de Disney+" items={rows.disney} /></Reveal>
+          <Reveal index={9}><BackdropRow title="Una peli cortita" items={rows.short} /></Reveal>
 
-              {/* Prime: posters */}
-              <Reveal index={7}><PosterRow title="Lo mejor de Prime Video" items={rows.prime} /></Reveal>
-            </>
-          )}
-
-          {/* Películas populares: posters */}
-          <Reveal index={8}><PosterRow title="Películas populares" items={rows.popularMovies} /></Reveal>
-
-          {/* Series del momento: rankeadas */}
-          <Reveal index={9}><RankedRow title="Series del momento" items={rows.popularSeries} /></Reveal>
-
-          {/* Series mejor valoradas. Si la API todavía no manda topSeries
-              (deploy desfasado), la fila no se dibuja en vez de repetir. */}
-          {rows.topSeries.length > 0 && (
-            <Reveal index={10}><BackdropRow title="Series mejor valoradas" items={rows.topSeries} /></Reveal>
-          )}
+          <Reveal index={10}>
+            {kids ? (
+              <PosterRow title="En familia" items={rows.last} onPressTitle={browse(GENRE.family, 'Familia')} />
+            ) : (
+              <PosterRow title="Terror" items={rows.last} onPressTitle={browse(GENRE.horror, 'Terror')} />
+            )}
+          </Reveal>
         </View>
       </Animated.ScrollView>
 
-      {/* Header overlay que se desvanece al hacer scroll */}
       <Animated.View
-        style={[styles.header, { top: insets.top + 4, opacity: headerOpacity }]}
-        pointerEvents="box-none"
+        pointerEvents="none"
+        style={[styles.topEdge, { height: insets.top + 76, opacity: edgeOpacity }]}
       >
-        <Text style={styles.headerTitle}>Inicio</Text>
-        {/* Avatar → selector de perfiles. Muestra el emoji del perfil activo
-            en vez del icono genérico cuando hay sesión. */}
+        <LinearGradient
+          // Casi opaco detrás de la hora: con 0.85 los títulos grandes de las
+          // tarjetas se seguían leyendo debajo del reloj y ensuciaban la barra.
+          colors={['rgba(0,0,0,0.96)', 'rgba(0,0,0,0.75)', 'transparent']}
+          locations={[0, 0.6, 1]}
+          style={StyleSheet.absoluteFill}
+        />
+      </Animated.View>
+
+      <View style={[styles.header, { top: insets.top + 4 }]} pointerEvents="box-none">
+        {/* Solo el título se desvanece al bajar; el avatar queda siempre a
+            mano, como el botón de cuenta de la app Apple TV. */}
+        <Animated.Text style={[styles.headerTitle, { opacity: headerOpacity }]}>Inicio</Animated.Text>
+        {/* Avatar → selector de perfiles, sobre un círculo de vidrio: es un
+            control que flota sobre el contenido. */}
         <Touchable
           scaleTo={0.9}
           haptic="light"
-          style={styles.avatar}
           onPress={() => router.push('/profiles' as never)}
+          accessibilityRole="button"
+          accessibilityLabel={profile ? `Perfil ${profile.name}. Cambiar de perfil` : 'Perfiles'}
         >
-          {profile ? (
-            <ProfileAvatar avatar={profile.avatar} size={36} />
-          ) : (
-            <SymbolView name="person.fill" tintColor={colors.text} style={styles.avatarIcon} />
-          )}
+          <Glass radius={22} interactive variant="clear" style={styles.avatar}>
+            {profile ? (
+              <ProfileAvatar avatar={profile.avatar} size={36} />
+            ) : (
+              <SymbolView name="person.fill" tintColor={colors.text} style={styles.avatarIcon} />
+            )}
+          </Glass>
         </Touchable>
-      </Animated.View>
+      </View>
     </View>
   )
+}
+
+// Mi lista guarda lo justo para dibujar la tarjeta; las filas esperan un
+// MediaItem de TMDB.
+function fromLibrary(i: LibraryItem): MediaItem {
+  return {
+    id: i.id,
+    media_type: i.media_type,
+    ...(i.media_type === 'tv' ? { name: i.title } : { title: i.title }),
+    poster_path: i.poster_path,
+    backdrop_path: i.backdrop_path,
+    overview: '',
+    vote_average: 0,
+  }
 }
 
 const styles = StyleSheet.create({
@@ -209,11 +322,6 @@ const styles = StyleSheet.create({
   fill: { flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center' },
   rows: { paddingTop: 16, paddingBottom: 90 },
   featuredWrap: { marginBottom: 24 },
-  rowTitle: {
-    ...rowHeading,
-    marginBottom: 12,
-    paddingHorizontal: 20,
-  },
   header: {
     position: 'absolute',
     left: 20,
@@ -228,12 +336,11 @@ const styles = StyleSheet.create({
     textShadowRadius: 8,
   },
   avatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(120,120,128,0.6)',
+    width: 44,
+    height: 44,
     alignItems: 'center',
     justifyContent: 'center',
   },
+  topEdge: { position: 'absolute', top: 0, left: 0, right: 0 },
   avatarIcon: { width: 22, height: 22 },
 })

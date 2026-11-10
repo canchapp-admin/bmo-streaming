@@ -19,7 +19,7 @@ type AuthState = {
   selectProfile: (p: Profile) => Promise<void>
   refreshProfiles: () => Promise<Profile[]>
   createProfile: (name: string, avatar: string) => Promise<Profile | null>
-  updateProfile: (profileId: string, patch: { name?: string; avatar?: string }) => Promise<boolean>
+  updateProfile: (profileId: string, patch: { name?: string; avatar?: string; is_kids?: boolean }) => Promise<boolean>
   // El PIN se pone y se comprueba en el servidor (RPC): el hash nunca llega al
   // cliente. Ver supabase/002_profile_pin.sql.
   setProfilePin: (profileId: string, pin: string | null) => Promise<boolean>
@@ -163,7 +163,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const updateProfile = useCallback(async (
     profileId: string,
-    patch: { name?: string; avatar?: string }
+    patch: { name?: string; avatar?: string; is_kids?: boolean }
   ) => {
     const { error } = await supabase.from('profiles').update(patch).eq('id', profileId)
     if (error) { console.warn('[auth] updateProfile:', error.message); return false }

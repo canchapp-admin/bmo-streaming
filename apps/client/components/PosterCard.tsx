@@ -1,10 +1,10 @@
 import { Pressable, Text, StyleSheet, View } from 'react-native'
 import { Image } from 'expo-image'
 import { SymbolView } from 'expo-symbols'
-import { useRouter } from 'expo-router'
 import { type MediaItem, posterUrl, titleOf, isUpcoming } from '@/lib/tmdb'
 import { prewarmTitle } from '@/lib/stream'
 import { Touchable } from './Touchable'
+import { TitleMenu, menuItemFrom } from './TitleMenu'
 import { colors } from '@/lib/theme'
 
 const CARD_WIDTH = 124
@@ -18,7 +18,6 @@ export function PosterCard({
   width?: number
   onRemove?: () => void
 }) {
-  const router = useRouter()
   // w500 (no el default w342): la tarjeta es 124pt+ y en pantallas 3x (Retina)
   // eso son ~372px — w342 quedaba blando. El iPhone tiene RAM/GPU de sobra.
   const uri = posterUrl(item.poster_path, 'w500')
@@ -32,12 +31,13 @@ export function PosterCard({
   const posterStyle = width != null ? { width, height: width * 1.5 } : null
 
   return (
+    <TitleMenu item={menuItemFrom(item)}>
     <Pressable
-      style={[styles.card, cardStyle]}
+      // flatten y no un array: TitleMenu le pasa props a esta tarjeta con
+      // asChild, y ese merge esparce el style como objeto — un array se rompe
+      // (la tarjeta perdía ancho y margen y la fila se descuadraba).
+      style={StyleSheet.flatten([styles.card, cardStyle])}
       onPressIn={() => prewarmTitle(item.id, isTv)}
-      onPress={() =>
-        router.push(`/title/${isTv ? 'tv' : 'movie'}/${item.id}` as never)
-      }
     >
       <View>
         {uri ? (
@@ -75,6 +75,7 @@ export function PosterCard({
         {titleOf(item)}
       </Text>
     </Pressable>
+    </TitleMenu>
   )
 }
 
