@@ -143,9 +143,20 @@ export function classifyStatus(status: number): FailureReason | null {
 // un video placeholder propio (p. ej. `failed_access_v2.mp4`, `failed_rar_v2.mp4`).
 // Heurística sobre el nombre — los de cuenta/acceso/premium son 'auth' (hay que
 // avisar y dejar de insistir); el resto, un problema de ESE torrent.
+//
+// El slate de ElfHosted (MediaFusion) es SIEMPRE 'placeholder': el error es de
+// la sesión de RD del servidor de ElfHosted (su IP compartida limitada o
+// rechazada), no de nuestra cuenta — abrir el breaker por eso cortaría el
+// tráfico que sí funciona. El mensaje viene en `?title=`; se usa como detalle.
 export function classifyPlaceholder(url: string): { reason: FailureReason; file: string } {
   let file = ''
-  try { file = new URL(url).pathname.split('/').pop() ?? '' } catch {}
+  try {
+    const u = new URL(url)
+    if (/(^|\.)slate\.elfhosted\.com$/i.test(u.hostname)) {
+      return { reason: 'placeholder', file: `elfhosted-slate: ${u.searchParams.get('title') ?? '?'}` }
+    }
+    file = u.pathname.split('/').pop() ?? ''
+  } catch {}
   const reason: FailureReason = /access|auth|premium|expired|token|ip|limit|traffic/i.test(file)
     ? 'auth'
     : 'placeholder'

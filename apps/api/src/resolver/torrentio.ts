@@ -13,6 +13,7 @@
 import { tmdbService } from '../tmdb/tmdb.service'
 import { TTLCache } from './cache'
 import { rdGuard, classifyStatus, classifyPlaceholder, redactSecrets, interpretUser, type AccountHealth } from './rd.guard'
+import { rdDirectEnabled, extractInfoHash, extractFileIdx, resolveViaRealDebrid, type RdDirectError } from './rd.direct'
 import {
   rankCandidates, selectRunnable, autoPlayable, rankForDownload, parseCacheState,
   type AudioTag, type HwTier, type LangPreference, type MediaRef, type PoorReason, type ScoredCandidate, type TorrentioStream,
@@ -186,7 +187,12 @@ function dedupeStreams(streams: TorrentioStream[]): TorrentioStream[] {
   const seen = new Map<string, TorrentioStream>()
   const out: TorrentioStream[] = []
   for (const s of streams) {
-    const key = s.infoHash ? `${s.infoHash}:${s.fileIdx ?? 0}` : s.url ?? ''
+    // El hash se saca también de la URL: Torrentio y MediaFusion casi nunca lo
+    // traen como campo, así que antes el mismo torrent en ambos no se detectaba
+    // (URLs distintas) y la carrera lo resolvía dos veces contra RD.
+    const hash = extractInfoHash(s)
+    const file = s.behaviorHints?.filename?.toLowerCase() ?? s.fileIdx ?? 0
+    const key = hash ? `${hash}:${file}` : s.url ?? ''
     if (!key) { out.push(s); continue }
     const prev = seen.get(key)
     if (!prev) { seen.set(key, s); out.push(s); continue }
@@ -294,12 +300,22 @@ const MAX_REDIRECTS = 6
 // contenido real). El video final SIEMPRE vive en la CDN de Real-Debrid, nunca
 // de vuelta en torrentio.strem.fun — cualquier resultado en ese dominio es
 // un placeholder de error, se descarta.
+//
+// MediaFusion en ElfHosted hace lo mismo con OTRO dominio: ante cualquier error
+// de RD (rate limit, permission_denied…) redirige a `slate.elfhosted.com/…/
+// slate.mp4?title=<mensaje>` — un video real de 720p con el texto del error.
+// Mismo tratamiento: nunca es el contenido, se descarta y la carrera sigue.
 function isTorrentioErrorPlaceholder(url: string): boolean {
   try {
-    return new URL(url).hostname.endsWith('torrentio.strem.fun')
+    const host = new URL(url).hostname
+    return host.endsWith('torrentio.strem.fun') || isElfHostedSlateHost(host)
   } catch {
     return false
   }
+}
+
+export function isElfHostedSlateHost(host: string): boolean {
+  return /(^|\.)slate\.elfhosted\.com$/i.test(host)
 }
 
 async function followResolveUrl(startUrl: string): Promise<string | null> {
@@ -421,10 +437,44 @@ export async function raceInWaves<C, R>(
   return null
 }
 
-async function tryCandidate(c: ScoredCandidate): Promise<{ url: string; c: ScoredCandidate }> {
+// Fallos del camino directo que SÍ justifican probar la URL del addon: problemas
+// nuestros (red, no supimos elegir el archivo — Torrentio sí puede vía su
+// fileIdx). Si RD dijo "no cacheado", "rate limit" o "cuenta", el addon usa la
+// MISMA key y fallaría igual: insistir sólo gastaría cuota.
+const ADDON_FALLBACK_REASONS = new Set(['network', 'no_file'])
+
+type Resolved = { url: string; c: ScoredCandidate; via: 'rd-direct' | 'addon' }
+
+async function tryCandidate(
+  c: ScoredCandidate,
+  ep: { season?: number; episode?: number } = {},
+): Promise<Resolved> {
+  // 1) Directo contra RD con nuestra key (ver rd.direct.ts): el indexador sólo
+  //    aportó el torrent. Sin intermediarios no hay slates ni IPs compartidas.
+  const hash = rdDirectEnabled() ? extractInfoHash(c.parsed.raw) : null
+  if (hash) {
+    try {
+      const url = await resolveViaRealDebrid(hash, {
+        filename: c.parsed.raw.behaviorHints?.filename ?? null,
+        fileIdx: extractFileIdx(c.parsed.raw),
+        season: ep.season ?? null,
+        episode: ep.episode ?? null,
+      })
+      return { url, c, via: 'rd-direct' }
+    } catch (e) {
+      const err = e as RdDirectError
+      if (!ADDON_FALLBACK_REASONS.has(err.reason) || !c.parsed.resolveUrl) {
+        throw new Error(`no resolvió (directo, ${err.reason}): ${c.parsed.filename} — ${err.message}`)
+      }
+      console.error(`[debrid] directo falló (${err.reason}: ${err.message}) → pruebo la URL del addon: ${c.parsed.filename}`)
+    }
+  }
+
+  // 2) URL de resolución del addon (comportamiento anterior). Los placeholders
+  //    de error (Torrentio y slate de ElfHosted) se descartan en followResolveUrl.
   const finalUrl = await followResolveUrl(c.parsed.resolveUrl!)
   if (!finalUrl) throw new Error(`no resolvió: ${c.parsed.filename}`)
-  return { url: finalUrl, c }
+  return { url: finalUrl, c, via: 'addon' }
 }
 
 // Una fuente ofrecida al usuario en el selector de calidad. Deliberadamente NO
@@ -508,9 +558,14 @@ export async function debridTiming(req: DebridRequest): Promise<Record<string, u
   marks.rank = Date.now() - tRank
 
   let resolved: string | null = null
+  let via: Resolved['via'] | null = null
   if (runnable.length) {
     resolved = await stage('unrestrict', async () => {
-      try { return (await tryCandidate(runnable[0]!)).url } catch { return null }
+      try {
+        const out = await tryCandidate(runnable[0]!, req)
+        via = out.via
+        return out.url
+      } catch { return null }
     })
   }
 
@@ -525,6 +580,8 @@ export async function debridTiming(req: DebridRequest): Promise<Record<string, u
     cacheCounts: r.cacheCounts,
     winner: runnable[0]?.parsed.filename ?? null,
     resolvedOk: !!resolved,
+    // Por dónde salió el link: 'rd-direct' (API de RD con nuestra key) o 'addon'.
+    via,
   }
 }
 
@@ -585,10 +642,10 @@ export async function resolveDebridStream(
       `${pp.sizeGB != null ? pp.sizeGB.toFixed(1) + 'GB' : '?GB'} ${pp.releaseKind ?? ''} cached=${pp.cached})`
     )
     try {
-      const out = await tryCandidate(chosen)
+      const out = await tryCandidate(chosen, req)
       rdGuard.recordSuccess()
       const cp = out.c.parsed
-      console.error(`[debrid] fuente elegida #${pick} → ${cp.filename}`)
+      console.error(`[debrid] fuente elegida #${pick} (${out.via}) → ${cp.filename}`)
       return {
         url: out.url,
         label: cp.filename,
@@ -620,7 +677,7 @@ export async function resolveDebridStream(
   }
 
   const tRace = Date.now()
-  const winner = await raceInWaves(auto, WAVES, tryCandidate)
+  const winner = await raceInWaves(auto, WAVES, (c) => tryCandidate(c, req))
   if (!winner) {
     console.error(`[debrid] torrentio ${tFetch}ms + carrera ${Date.now() - tRace}ms — ninguno de ${runnable.length} resolvió`)
     rdGuard.recordExhausted()
@@ -630,7 +687,7 @@ export async function resolveDebridStream(
 
   const p = winner.c.parsed
   console.error(
-    `[debrid] ${p.raw._source ?? 'torrentio'} ${tFetch}ms + carrera ${Date.now() - tRace}ms ` +
+    `[debrid] ${p.raw._source ?? 'torrentio'} via ${winner.via} ${tFetch}ms + carrera ${Date.now() - tRace}ms ` +
     `(${runnable.length} ejecutables de ${streams.length}) → ${p.filename} ` +
     `[score ${Math.round(winner.c.score)} · ${p.resolution ?? '?'}p ${p.codec ?? '?'} · cached=${p.cached}]`
   )

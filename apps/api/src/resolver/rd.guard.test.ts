@@ -84,6 +84,10 @@ describe('clasificación', () => {
   test('placeholders de Torrentio', () => {
     expect(classifyPlaceholder('https://torrentio.strem.fun/videos/failed_rar_v2.mp4')).toEqual({ reason: 'placeholder', file: 'failed_rar_v2.mp4' })
     expect(classifyPlaceholder('https://torrentio.strem.fun/videos/failed_access_v2.mp4').reason).toBe('auth')
+    // Slate de ElfHosted: aunque diga "Too many requests", es la sesión de RD de
+    // ElfHosted, no la nuestra → nunca abre el breaker.
+    const slate = classifyPlaceholder('https://slate.elfhosted.com/cache/abc/slate.mp4?title=Too+many+requests&body=x')
+    expect(slate).toEqual({ reason: 'placeholder', file: 'elfhosted-slate: Too many requests' })
   })
 })
 
