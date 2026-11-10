@@ -2,7 +2,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   View, Text, StyleSheet, ActivityIndicator,
-  Animated, Pressable, ScrollView, useWindowDimensions,
+  Animated, Easing, Pressable, ScrollView, useWindowDimensions,
   type GestureResponderEvent,
 } from 'react-native'
 import { Image } from 'expo-image'
@@ -13,6 +13,7 @@ import { LinearGradient } from 'expo-linear-gradient'
 import { useVideoPlayer, VideoView } from 'expo-video'
 import { useEventListener } from 'expo'
 import { SymbolView } from 'expo-symbols'
+import * as Haptics from 'expo-haptics'
 import Slider from '@react-native-community/slider'
 import * as ScreenOrientation from 'expo-screen-orientation'
 import { GestureHandlerRootView, GestureDetector, Gesture } from 'react-native-gesture-handler'
@@ -35,6 +36,9 @@ import {
 import { backdropUrl, tmdb } from '@/lib/tmdb'
 import { getLocalPath, smartDownloadNext } from '@/lib/download'
 import { Touchable } from '@/components/Touchable'
+import { Glass } from '@/components/Glass'
+import { GlassButton } from '@/components/GlassButton'
+import { Scrubber } from '@/components/player/Scrubber'
 import { AirPlayButton, isAirPlayConnected } from '@/modules/airplay'
 import VideoVLC from '@/vendor/react-native-video-vlc/src/VideoVLC'
 import type {
@@ -766,8 +770,11 @@ function VlcPlayer({
   // Tamaño fijo del dropdown (no crece con la cantidad de pistas ni se achica
   // con poco contenido) — clamp solo como red de seguridad en pantallas bajas
   // para que nunca se salga del área visible ni llegue a la barra de abajo.
-  const dropdownTop = topBarTop + 44
-  const dropdownHeight = Math.min(280, winHeight - dropdownTop - 70)
+  // Margen a los costados: el del notch en landscape, nunca menos de 24.
+  const sidePad = Math.max(24, insets.left, insets.right)
+  // El menú sale de abajo a la derecha (sobre los botones de acción) y nunca
+  // pasa de la barra de arriba.
+  const menuMaxHeight = Math.max(200, winHeight - insets.bottom - 112 - topBarTop - 56)
   const vlcRef = useRef<VideoVLCRef>(null)
   // progressRef local: lo usan seekTo, la detección de fin y la fracción vista.
   // El guardado (throttle + final al desmontar) lo maneja useProgressSaver.
@@ -800,8 +807,12 @@ function VlcPlayer({
   // Mostrar el HUD desde oculto se DIFIERE la ventana de doble tap: si llega un
   // segundo toque (doble tap = seek), se cancela y el HUD nunca aparece.
   const pendingShow = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const [seekHint, setSeekHint] = useState<'left' | 'right' | null>(null)
+  // Aviso de doble tap. `amount` crece si seguís tocando del mismo lado
+  // (racha, como YouTube): 10 → 20 → 30 s.
+  const [seekHint, setSeekHint] = useState<{ side: 'left' | 'right'; amount: number } | null>(null)
   const seekHintOpacity = useRef(new Animated.Value(0)).current
+  const seekHintPop = useRef(new Animated.Value(1)).current
+  const seekStreak = useRef<{ side: 'left' | 'right'; time: number; amount: number } | null>(null)
   const seekHintTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const [paused, setPaused] = useState(false)
@@ -812,7 +823,21 @@ function VlcPlayer({
   const [audioTracks, setAudioTracks] = useState<TrackInfo[]>([])
   const [textTracks, setTextTracks] = useState<TrackInfo[]>([])
   const [selectedAudioTrack, setSelectedAudioTrack] = useState(-1)
-  const [trackPicker, setTrackPicker] = useState<'audio' | 'text' | 'style' | 'quality' | null>(null)
+  // Menú abierto: 'media' = audio y subtítulos (dos columnas), 'style' =
+  // estilo y sincronía del subtítulo, 'speed' = velocidad, 'quality' = fuente.
+  const [trackPicker, setTrackPicker] = useState<'media' | 'style' | 'speed' | 'quality' | null>(null)
+  const [rate, setRate] = useState(1)
+  const [scrubbing, setScrubbing] = useState(false)
+  // Lo que decide si los controles pueden esconderse solos, leído desde el
+  // timer (que no ve el estado nuevo): en pausa, con un menú abierto o
+  // arrastrando la barra, se quedan.
+  const holdRef = useRef({ paused: false, picker: false, scrubbing: false })
+  holdRef.current = { paused, picker: !!trackPicker, scrubbing }
+  // Aparecen y se van con un fundido (antes era de golpe). Se desmontan
+  // recién al terminar de irse.
+  const controlsAnim = useRef(new Animated.Value(1)).current
+  const [controlsMounted, setControlsMounted] = useState(true)
+  const menuAnim = useRef(new Animated.Value(0)).current
 
   // Preferencias de subtítulo (modo activo, estilo y sincronía) en @bmo/player,
   // compartidas con la TV. El hook trabaja con ids de pista en string; VLCKit
@@ -842,8 +867,36 @@ function VlcPlayer({
 
   function scheduleHide() {
     if (hideTimer.current) clearTimeout(hideTimer.current)
-    hideTimer.current = setTimeout(() => setControlsVisible(false), 3500)
+    hideTimer.current = setTimeout(() => {
+      const h = holdRef.current
+      if (h.paused || h.picker || h.scrubbing) return
+      setControlsVisible(false)
+    }, 4000)
   }
+
+  useEffect(() => {
+    if (controlsVisible) setControlsMounted(true)
+    Animated.timing(controlsAnim, {
+      toValue: controlsVisible ? 1 : 0,
+      duration: controlsVisible ? 180 : 280,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start(({ finished }) => { if (finished && !controlsVisible) setControlsMounted(false) })
+  }, [controlsVisible])
+
+  // En pausa los controles no se van (como en Apple TV); al volver a
+  // reproducir, arranca de nuevo la cuenta para esconderlos.
+  useEffect(() => {
+    if (paused) { setControlsVisible(true); if (hideTimer.current) clearTimeout(hideTimer.current) }
+    else scheduleHide()
+  }, [paused])
+
+  // El menú entra con un resorte (escala + subida). Sin opacidad: el vidrio
+  // de Liquid Glass no se dibuja con opacidad animada.
+  useEffect(() => {
+    if (!trackPicker) { menuAnim.setValue(0); return }
+    Animated.spring(menuAnim, { toValue: 1, speed: 22, bounciness: 6, useNativeDriver: true }).start()
+  }, [trackPicker == null])
 
   useEffect(() => {
     scheduleHide()
@@ -899,14 +952,17 @@ function VlcPlayer({
 
   const DOUBLE_TAP_MS = 280
 
-  function showSeekHint(side: 'left' | 'right') {
+  function showSeekHint(side: 'left' | 'right', amount: number) {
     if (seekHintTimer.current) clearTimeout(seekHintTimer.current)
-    setSeekHint(side)
+    setSeekHint({ side, amount })
     seekHintOpacity.setValue(1)
+    // Un "pop" en cada toque de la racha: se siente que sumó.
+    seekHintPop.setValue(0.86)
+    Animated.spring(seekHintPop, { toValue: 1, speed: 30, bounciness: 12, useNativeDriver: true }).start()
     seekHintTimer.current = setTimeout(() => {
       Animated.timing(seekHintOpacity, { toValue: 0, duration: 250, useNativeDriver: true })
-        .start(() => setSeekHint(null))
-    }, 450)
+        .start(() => { setSeekHint(null); seekStreak.current = null })
+    }, 650)
   }
 
   // Tap simple = mostrar/ocultar controles; doble tap en la mitad izquierda/
@@ -923,13 +979,28 @@ function VlcPlayer({
     const now = Date.now()
     const last = lastTap.current
 
+    // En racha (el aviso de ±10 sigue en pantalla): cada toque más del mismo
+    // lado suma otros 10 s, sin tener que volver a hacer doble tap.
+    const streak = seekStreak.current
+    if (streak && streak.side === side && now - streak.time < 800) {
+      lastTap.current = null
+      if (pendingShow.current) { clearTimeout(pendingShow.current); pendingShow.current = null }
+      seekStreak.current = { side, time: now, amount: streak.amount + 10 }
+      skipBy(side === 'right' ? 10 : -10)
+      showSeekHint(side, streak.amount + 10)
+      Haptics.selectionAsync().catch(() => {})
+      return
+    }
+
     // Segundo toque del mismo lado dentro de la ventana → DOBLE TAP: seek + hint,
     // sin tocar el HUD (cancela el "mostrar" pendiente que dejó el primer toque).
     if (last && last.side === side && now - last.time < DOUBLE_TAP_MS) {
       lastTap.current = null
       if (pendingShow.current) { clearTimeout(pendingShow.current); pendingShow.current = null }
       skipBy(side === 'right' ? 10 : -10)
-      showSeekHint(side)
+      seekStreak.current = { side, time: now, amount: 10 }
+      showSeekHint(side, 10)
+      Haptics.selectionAsync().catch(() => {})
       return
     }
 
@@ -1101,9 +1172,12 @@ function VlcPlayer({
     seekGraceTimer.current = setTimeout(() => { seeking.current = false }, 700)
   }
 
+  // Desde progressRef y no desde `position`: en una racha de toques rápidos el
+  // estado todavía no se actualizó y se perdían saltos.
   function skipBy(seconds: number) {
     seeking.current = true
-    seekTo(position + seconds)
+    seekTo(progressRef.current.time + seconds)
+    if (controlsVisible) scheduleHide()
   }
 
   const remaining = Math.max(0, duration - position)
@@ -1123,6 +1197,7 @@ function VlcPlayer({
             style={styles.fill}
             initialSource={{ uri, headers: referer ? { Referer: referer } : undefined }}
             paused={paused}
+            rate={rate}
             resizeMode={filled ? 'cover' : 'none'}
             progressUpdateInterval={500}
             selectedAudioTrack={selectedAudioTrack}
@@ -1186,484 +1261,545 @@ function VlcPlayer({
         <Animated.View
           style={[
             styles.seekHint,
-            seekHint === 'left' ? styles.seekHintLeft : styles.seekHintRight,
-            { opacity: seekHintOpacity },
+            seekHint.side === 'left' ? styles.seekHintLeft : styles.seekHintRight,
+            { opacity: seekHintOpacity, transform: [{ scale: seekHintPop }] },
           ]}
           pointerEvents="none"
         >
           <SymbolView
-            name={seekHint === 'left' ? 'gobackward.10' : 'goforward.10'}
+            name={seekHint.side === 'left' ? 'backward.fill' : 'forward.fill'}
             tintColor="#fff"
-            style={styles.fillHintIcon}
+            style={styles.seekHintIcon}
           />
+          <Text style={styles.seekHintText}>
+            {seekHint.side === 'left' ? '−' : '+'}{seekHint.amount} s
+          </Text>
         </Animated.View>
       )}
 
       {buffering && (
         <View style={[StyleSheet.absoluteFillObject, styles.vlcBufferCenter]} pointerEvents="none">
-          <ActivityIndicator color="#fff" size="large" />
+          <View style={styles.bufferRing}>
+            <ActivityIndicator color="#fff" size="large" />
+          </View>
         </View>
       )}
 
-      {controlsVisible && (
-        // box-none: el contenedor en sí no debe interceptar toques (si no,
-        // compite con el GestureDetector del video de abajo y le cancela el
-        // tap — confirmado con logs: el primer tap and abrir controles
-        // funcionaba, el segundo para cerrarlos fallaba justo apenas esta
-        // vista se montaba). Los botones de adentro (Touchable/Slider) tienen
-        // su propio manejo de toque y siguen andando igual con box-none.
-        <View style={StyleSheet.absoluteFillObject} pointerEvents="box-none">
-          <View style={styles.vlcScrim} pointerEvents="none" />
+      {controlsMounted && (
+        // box-none: el contenedor no intercepta toques (competía con el tap
+        // del video); los botones de adentro sí.
+        <View style={StyleSheet.absoluteFillObject} pointerEvents={controlsVisible ? 'box-none' : 'none'}>
+          {/* Degradés arriba y abajo en vez de oscurecer todo el video: los
+              controles se leen y la imagen sigue viéndose. En pausa, un velo
+              más. Esto SÍ hace fundido (no es vidrio). */}
+          <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFillObject, { opacity: controlsAnim }]}>
+            <LinearGradient colors={['rgba(0,0,0,0.7)', 'rgba(0,0,0,0)']} style={styles.scrimTop} />
+            <LinearGradient colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.82)']} style={styles.scrimBottom} />
+            {paused && <View style={styles.pausedVeil} />}
+          </Animated.View>
 
-          {/* Barra superior: cerrar + pistas */}
-          <View style={[styles.vlcTopBar, { top: topBarTop }]}>
-            <Touchable scaleTo={0.9} haptic="light" style={styles.vlcIconBtn} onPress={() => onClose(duration > 0 ? position / duration : 0)}>
-              <SymbolView name="xmark" tintColor="#fff" style={styles.vlcIcon} />
-            </Touchable>
-            <View style={styles.vlcTopRight}>
-              {/* AirPlay: la fuente VLC/mkv no castea; al conectar la TV
-                  saltamos a la vía HLS (onCast → forceCastHls en PlayerScreen). */}
-              {onCast && (
-                <View style={styles.vlcIconBtn}>
-                  <AirPlayButton
-                    style={styles.airplayBtn}
-                    tint="#FFFFFF"
-                    activeTint={colors.accent}
-                    onConnectionChange={(e) => { if (e.nativeEvent.connected) onCast() }}
-                  />
-                </View>
-              )}
-              {!buffering && (
-                <Touchable
-                  scaleTo={0.9} haptic="light" style={styles.vlcIconBtn}
-                  onPress={() => setTrackPicker((p) => (p ? null : 'audio'))}
-                >
-                  <SymbolView name="ellipsis" tintColor="#fff" style={styles.vlcIcon} />
-                </Touchable>
-              )}
+          {/* Los botones son Liquid Glass, que no se dibuja con opacidad
+              animada: en vez de fundirse, la barra de arriba entra desde
+              arriba, la de abajo desde abajo y los del centro crecen. */}
+          {/* Arriba: cerrar y el título (como Apple TV), AirPlay a la derecha */}
+          <Animated.View
+            style={[
+              styles.topBar,
+              {
+                top: topBarTop, left: sidePad, right: sidePad,
+                transform: [{ translateY: controlsAnim.interpolate({ inputRange: [0, 1], outputRange: [-(topBarTop + 70), 0] }) }],
+              },
+            ]}
+            pointerEvents="box-none"
+          >
+            <GlassButton
+              radius={21} style={styles.roundBtn}
+              onPress={() => onClose(duration > 0 ? position / duration : 0)}
+              accessibilityRole="button" accessibilityLabel="Cerrar"
+            >
+              <SymbolView name="xmark" weight="semibold" tintColor="#fff" style={styles.roundIcon} />
+            </GlassButton>
+            <View style={styles.topTitle} pointerEvents="none">
+              <Text style={styles.topTitleText} numberOfLines={1}>{title}</Text>
+              {!!episodeLabel && <Text style={styles.topSubText} numberOfLines={1}>{episodeLabel}</Text>}
             </View>
-          </View>
+            {onCast && (
+              <Glass radius={21} variant="clear" style={styles.roundBtn}>
+                <AirPlayButton
+                  style={styles.airplayBtn}
+                  tint="#FFFFFF"
+                  activeTint={colors.accent}
+                  onConnectionChange={(e) => { if (e.nativeEvent.connected) onCast() }}
+                />
+              </Glass>
+            )}
+          </Animated.View>
 
-          {/* Play/pause + retroceder/adelantar 10s — ocultos mientras buffering,
-              si no quedaban superpuestos con el spinner de carga. */}
-          {!buffering && (
-            <View style={[styles.vlcCenterControls, { flexDirection: 'row', gap: 36 }]} pointerEvents="box-none">
-              <Touchable scaleTo={0.9} haptic="light" style={styles.vlcSkipBtn} onPress={() => skipBy(-10)}>
-                <SymbolView name="gobackward.10" tintColor="#fff" style={styles.vlcSkipIcon} />
-              </Touchable>
-              <Touchable scaleTo={0.9} haptic="light" style={styles.vlcPlayBtn} onPress={() => setPaused((p) => !p)}>
-                <SymbolView name={paused ? 'play.fill' : 'pause.fill'} tintColor="#fff" style={styles.vlcPlayIcon} />
-              </Touchable>
-              <Touchable scaleTo={0.9} haptic="light" style={styles.vlcSkipBtn} onPress={() => skipBy(10)}>
-                <SymbolView name="goforward.10" tintColor="#fff" style={styles.vlcSkipIcon} />
-              </Touchable>
-            </View>
+          {/* Centro: −10 · play/pausa · +10. Se ocultan mientras carga (el
+              spinner va ahí) y mientras arrastrás la barra (molestan). */}
+          {!buffering && !scrubbing && (
+            <Animated.View
+              style={[styles.centerRow, { transform: [{ scale: controlsAnim.interpolate({ inputRange: [0, 1], outputRange: [0.01, 1] }) }] }]}
+              pointerEvents="box-none"
+            >
+              <SkipButton direction="back" onPress={() => skipBy(-10)} />
+              <GlassButton
+                radius={42} style={styles.playBtn} haptic="medium" scaleTo={0.88}
+                onPress={() => setPaused((p) => !p)}
+                accessibilityRole="button" accessibilityLabel={paused ? 'Reproducir' : 'Pausar'}
+              >
+                <SymbolView name={paused ? 'play.fill' : 'pause.fill'} tintColor="#fff" style={styles.playIcon} />
+              </GlassButton>
+              <SkipButton direction="forward" onPress={() => skipBy(10)} />
+            </Animated.View>
           )}
 
-          {/* Título sobre la barra, alineado a la izquierda con el scrubber.
-              En series se muestra la temporada y el episodio en una segunda
-              línea, más apagada, para que el título siga siendo lo dominante. */}
-          <View style={[styles.vlcTitleBlock, { bottom: insets.bottom + 58 }]} pointerEvents="none">
-            <Text style={styles.vlcTitleText} numberOfLines={1}>{title}</Text>
-            {!!episodeLabel && (
-              <Text style={styles.vlcEpisodeText} numberOfLines={1}>{episodeLabel}</Text>
+          {/* Abajo: acciones a la vista (antes escondidas en "…") y la barra */}
+          <Animated.View
+            style={[
+              styles.bottomArea,
+              {
+                left: sidePad, right: sidePad, bottom: insets.bottom + 10,
+                transform: [{ translateY: controlsAnim.interpolate({ inputRange: [0, 1], outputRange: [insets.bottom + 180, 0] }) }],
+              },
+            ]}
+            pointerEvents="box-none"
+          >
+            {!buffering && (
+              <View style={styles.actionsRow} pointerEvents="box-none">
+                <ActionPill
+                  icon="captions.bubble"
+                  label="Audio y subtítulos"
+                  active={trackPicker === 'media' || trackPicker === 'style'}
+                  onPress={() => setTrackPicker((p) => (p === 'media' || p === 'style' ? null : 'media'))}
+                />
+                <ActionPill
+                  icon="gauge.with.dots.needle.67percent"
+                  label={rate === 1 ? 'Velocidad' : `${formatRate(rate)}×`}
+                  active={trackPicker === 'speed'}
+                  onPress={() => setTrackPicker((p) => (p === 'speed' ? null : 'speed'))}
+                />
+                {onPickSource && (
+                  <ActionPill
+                    icon="sparkles.tv"
+                    label="Calidad"
+                    active={trackPicker === 'quality'}
+                    onPress={() => setTrackPicker((p) => (p === 'quality' ? null : 'quality'))}
+                  />
+                )}
+                {hasNext && (
+                  <ActionPill icon="forward.end.fill" label="Siguiente" onPress={onPlayNext} />
+                )}
+              </View>
             )}
-          </View>
-
-          {/* Barra inferior: scrubber + tiempos */}
-          <View style={[styles.vlcBottomBar, { bottom: insets.bottom + 12 }]}>
-            <Text style={styles.vlcTime}>{fmt(position)}</Text>
-            <Slider
-              style={styles.vlcSlider}
-              value={position}
-              minimumValue={0}
-              maximumValue={duration > 0 ? duration : 1}
-              minimumTrackTintColor="#fff"
-              maximumTrackTintColor={colors.textFaint}
-              thumbTintColor="#fff"
-              onSlidingStart={() => { seeking.current = true }}
-              onSlidingComplete={(v) => { seekTo(v) }}
+            <Scrubber
+              position={position}
+              duration={duration}
+              onScrubStart={() => { seeking.current = true; setScrubbing(true) }}
+              onScrubEnd={() => { setScrubbing(false); scheduleHide() }}
+              onSeek={(t) => { seeking.current = true; seekTo(t) }}
             />
-            <Text style={styles.vlcTime}>{fmt(duration)}</Text>
-          </View>
+          </Animated.View>
         </View>
       )}
 
+      {/* Siguiente episodio: aparece al final, con la cuenta de lo que falta
+          llenando la pastilla. */}
       {showPill && (
         <Touchable
           scaleTo={0.95}
           haptic="medium"
-          style={[styles.nextPill, { bottom: insets.bottom + 80, right: insets.right + 24 }]}
+          style={[styles.nextPill, { bottom: insets.bottom + (controlsVisible ? 128 : 28), right: sidePad }]}
           onPress={onPlayNext}
+          accessibilityRole="button"
+          accessibilityLabel={`Siguiente episodio, empieza en ${Math.ceil(remaining)} segundos`}
         >
-          <SymbolView name="forward.fill" tintColor="#000" style={styles.nextPillIcon} />
+          <View style={[styles.nextPillFill, { width: `${(1 - remaining / NEXT_PILL_S) * 100}%` }]} />
+          <SymbolView name="play.fill" tintColor="#000" style={styles.nextPillIcon} />
           <Text style={styles.nextPillText}>Siguiente episodio</Text>
         </Touchable>
       )}
 
       {trackPicker && (
         <View style={StyleSheet.absoluteFillObject}>
-          <Pressable style={StyleSheet.absoluteFillObject} onPress={() => setTrackPicker(null)} />
-          <View style={[styles.vlcDropdownWrap, { top: dropdownTop, height: dropdownHeight }]}>
-            <BlurView intensity={78} tint="systemChromeMaterialDark" style={styles.vlcPickerCard}>
-              <LinearGradient
-                colors={[colors.border, 'rgba(255,255,255,0)']}
-                locations={[0, 0.6]}
-                style={styles.vlcPickerSheen}
-                pointerEvents="none"
-              />
-
-              <View style={styles.vlcPickerTabs}>
-                {/* Touchable envuelve el style recibido en un Animated.View
-                    ANIDADO dentro de su propio Pressable — el flex:1 de
-                    vlcPickerTab nunca llegaba al ítem real de la fila (el
-                    Pressable), así que los 3 tabs colapsaban a su ancho
-                    mínimo en vez de repartirse el espacio. Por eso el
-                    flex:1 va en este wrapper, no en el Touchable. */}
-                <View style={styles.vlcPickerTabSlot}>
-                  <Touchable
-                    scaleTo={0.94} haptic="selection"
-                    style={[styles.vlcPickerTab, trackPicker === 'audio' && styles.vlcPickerTabActive]}
-                    onPress={() => setTrackPicker('audio')}
-                  >
-                    <SymbolView name="waveform" tintColor={trackPicker === 'audio' ? '#000' : '#fff'} style={styles.vlcIconSm} />
-                  </Touchable>
-                </View>
-                <View style={styles.vlcPickerTabSlot}>
-                  <Touchable
-                    scaleTo={0.94} haptic="selection"
-                    style={[styles.vlcPickerTab, trackPicker === 'text' && styles.vlcPickerTabActive]}
-                    onPress={() => setTrackPicker('text')}
-                  >
-                    <SymbolView name="captions.bubble" tintColor={trackPicker === 'text' ? '#000' : '#fff'} style={styles.vlcIconSm} />
-                  </Touchable>
-                </View>
-                {srtCues.length > 0 && (
-                  <View style={styles.vlcPickerTabSlot}>
-                    <Touchable
-                      scaleTo={0.94} haptic="selection"
-                      style={[styles.vlcPickerTab, trackPicker === 'style' && styles.vlcPickerTabActive]}
-                      onPress={() => setTrackPicker('style')}
-                    >
-                      <SymbolView name="textformat.size" tintColor={trackPicker === 'style' ? '#000' : '#fff'} style={styles.vlcIconSm} />
-                    </Touchable>
+          <Pressable
+            style={StyleSheet.absoluteFillObject}
+            onPress={() => setTrackPicker(null)}
+            accessibilityRole="button"
+            accessibilityLabel="Cerrar menú"
+          />
+          <Animated.View
+            style={[
+              styles.menuWrap,
+              {
+                right: sidePad,
+                bottom: insets.bottom + 112,
+                width: trackPicker === 'media' ? Math.min(560, winWidth - sidePad * 2) : 330,
+                maxHeight: menuMaxHeight,
+                transformOrigin: 'bottom right',
+                transform: [
+                  { translateY: menuAnim.interpolate({ inputRange: [0, 1], outputRange: [16, 0] }) },
+                  { scale: menuAnim.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1] }) },
+                ],
+              },
+            ]}
+          >
+            <Glass radius={26} style={styles.menuCard}>
+              {/* ── Audio y subtítulos: dos columnas ── */}
+              {trackPicker === 'media' && (
+                <View style={styles.menuColumns}>
+                  <View style={styles.menuColumn}>
+                    <MenuHeader icon="waveform" title="Audio" />
+                    <ScrollView style={styles.menuScroll} showsVerticalScrollIndicator={false}>
+                      {audioTracks.map((t) => (
+                        <MenuRow
+                          key={t.id}
+                          label={prettyTrack(t)}
+                          selected={selectedAudioTrack === t.id}
+                          onPress={() => setSelectedAudioTrack(t.id)}
+                        />
+                      ))}
+                      {audioTracks.length === 0 && (
+                        <Text style={styles.menuEmpty}>Una sola pista de audio</Text>
+                      )}
+                      {/* Siempre a la vista: aunque el nombre del archivo no
+                          diga "latino", el doblaje puede estar en otra fuente. */}
+                      <MenuRow
+                        icon="arrow.triangle.2.circlepath"
+                        label={audioLang === 'latino'
+                          ? 'Volver al audio original'
+                          : hasLatinoAlternative ? 'Cambiar a audio latino' : 'Buscar audio latino'}
+                        onPress={() => {
+                          onChangeAudioLang(audioLang === 'latino' ? 'original' : 'latino')
+                          setTrackPicker(null)
+                        }}
+                      />
+                      {audioLang === 'latino' && audioTracks.length > 0 && !audioTracks.some(isSpanishTrack) && (
+                        <Text style={styles.menuNotice}>
+                          Esta fuente no trae audio en español. Probá otra desde Calidad.
+                        </Text>
+                      )}
+                    </ScrollView>
                   </View>
-                )}
-                {onPickSource && (
-                  <View style={styles.vlcPickerTabSlot}>
-                    <Touchable
-                      scaleTo={0.94} haptic="selection"
-                      style={[styles.vlcPickerTab, trackPicker === 'quality' && styles.vlcPickerTabActive]}
-                      onPress={() => setTrackPicker('quality')}
-                    >
-                      <SymbolView name="4k.tv" tintColor={trackPicker === 'quality' ? '#000' : '#fff'} style={styles.vlcIconSm} />
-                    </Touchable>
+                  <View style={styles.menuDivider} />
+                  <View style={styles.menuColumn}>
+                    <MenuHeader icon="captions.bubble" title="Subtítulos" />
+                    <ScrollView style={styles.menuScroll} showsVerticalScrollIndicator={false}>
+                      <MenuRow label="Desactivados" selected={subMode === 'none'} onPress={() => chooseSubMode('none')} />
+                      {srtCues.length > 0 && (
+                        <MenuRow
+                          label="Español"
+                          detail="Descargado · ajustable"
+                          selected={subMode === 'external'}
+                          onPress={() => chooseSubMode('external')}
+                        />
+                      )}
+                      {textTracks.map((t) => (
+                        <MenuRow
+                          key={t.id}
+                          label={prettyTrack(t)}
+                          detail="Del archivo"
+                          selected={subMode === String(t.id)}
+                          onPress={() => chooseSubMode(String(t.id))}
+                        />
+                      ))}
+                      {srtCues.length === 0 && textTracks.length === 0 && (
+                        <Text style={styles.menuEmpty}>Esta fuente no trae subtítulos</Text>
+                      )}
+                      {srtCues.length === 0 && !!subsDiagnosis && (
+                        <Text style={styles.menuNotice}>{subsDiagnosis}</Text>
+                      )}
+                    </ScrollView>
+                    {srtCues.length > 0 && (
+                      <MenuRow
+                        icon="textformat.size"
+                        label="Estilo y sincronía"
+                        chevron
+                        onPress={() => setTrackPicker('style')}
+                      />
+                    )}
                   </View>
-                )}
-              </View>
-
-              {/* La fila se muestra SIEMPRE. Antes dependía de
-                  hasLatinoAlternative, que el servidor deduce del nombre de
-                  archivo — si el release no dice "latino" en el título pero sí
-                  trae el doblaje, la opción desaparecía y no había forma de
-                  intentarlo. Es preferible ofrecerla y avisar si no se
-                  encontró, a esconderla por una corazonada. */}
-              {trackPicker === 'audio' && (
-                <>
-                  <Touchable
-                    scaleTo={0.98}
-                    haptic="selection"
-                    style={styles.vlcPickerSwitchRow}
-                    onPress={() => {
-                      onChangeAudioLang(audioLang === 'latino' ? 'original' : 'latino')
-                      setTrackPicker(null)
-                    }}
-                  >
-                    <SymbolView name="arrow.triangle.2.circlepath" tintColor="#fff" style={styles.vlcIcon} />
-                    {/* hasLatinoAlternative ya no decide si la fila se ve, pero
-                        sigue sirviendo para el texto: cuando el servidor SÍ
-                        detectó una versión latina se promete algo concreto en
-                        vez de un "buscar" que puede no encontrar nada. */}
-                    <Text style={styles.vlcPickerSwitchText} numberOfLines={1}>
-                      {audioLang === 'latino'
-                        ? 'Volver a audio Original'
-                        : hasLatinoAlternative
-                          ? 'Cambiar a fuente con audio Latino'
-                          : 'Buscar fuente con audio Latino'}
-                    </Text>
-                  </Touchable>
-
-                  {/* Aviso honesto: se pidió latino pero el archivo que llegó
-                      no trae ninguna pista en español. Sin esto el usuario
-                      creía que había cambiado y seguía escuchando inglés. */}
-                  {audioLang === 'latino' && audioTracks.length > 0
-                    && !audioTracks.some(isSpanishTrack) && (
-                    <Text style={styles.vlcPickerNotice}>
-                      Esta fuente no trae audio en español. Prueba con otra en la pestaña de calidad.
-                    </Text>
-                  )}
-                </>
+                </View>
               )}
 
-              {trackPicker === 'style' ? (
-                // ScrollView y no un View centrado: la tarjeta tiene alto fijo
-                // (dropdownHeight) y con `justifyContent: center` el contenido
-                // que no entraba desbordaba hacia ARRIBA y abajo a la vez,
-                // montándose sobre las pestañas.
-                <ScrollView
-                  style={styles.vlcPickerList}
-                  contentContainerStyle={styles.vlcStyleContent}
-                  showsVerticalScrollIndicator={false}
-                >
-                  <SubtitleStyleRow
-                    label="Tamaño"
-                    value={subStyle.size}
-                    options={[
-                      { value: 'small', label: 'Chico' },
-                      { value: 'medium', label: 'Medio' },
-                      { value: 'large', label: 'Grande' },
-                    ]}
-                    onChange={(size) => changeSubStyle({ size })}
-                  />
-                  <SubtitleStyleRow
-                    label="Color"
-                    value={subStyle.color}
-                    options={[
-                      { value: 'white', label: 'Blanco' },
-                      { value: 'yellow', label: 'Amarillo' },
-                      { value: 'cyan', label: 'Cian' },
-                    ]}
-                    onChange={(color) => changeSubStyle({ color })}
-                  />
-                  <SubtitleStyleRow
-                    label="Fondo"
-                    value={subStyle.background}
-                    options={[
-                      { value: 'none', label: 'Ninguno' },
-                      { value: 'semi', label: 'Semitransparente' },
-                    ]}
-                    onChange={(background) => changeSubStyle({ background })}
-                  />
-                  <SubtitleStyleRow
-                    label="Borde"
-                    value={subStyle.outline}
-                    options={[
-                      { value: 'none', label: 'Ninguno' },
-                      { value: 'soft', label: 'Suave' },
-                      { value: 'strong', label: 'Fuerte' },
-                    ]}
-                    onChange={(outline) => changeSubStyle({ outline })}
-                  />
-                  <SubtitleStyleRow
-                    label="Posición"
-                    value={subStyle.position}
-                    options={[
-                      { value: 'low', label: 'Abajo' },
-                      { value: 'mid', label: 'Medio' },
-                      { value: 'high', label: 'Alto' },
-                    ]}
-                    onChange={(position) => changeSubStyle({ position })}
-                  />
-                  <SubtitleStyleRow
-                    label="Opacidad"
-                    value={subStyle.opacity}
-                    options={[
-                      { value: 'full', label: '100%' },
-                      { value: 'high', label: '85%' },
-                      { value: 'medium', label: '70%' },
-                    ]}
-                    onChange={(opacity) => changeSubStyle({ opacity })}
-                  />
-
-                  {/* Sincronía. Los .srt vienen cronometrados para otro release
-                      que el archivo que sirve Real-Debrid, así que casi siempre
-                      hay un desfase; suelen ir adelantados. Se guarda por
-                      título/episodio porque depende del archivo concreto. */}
-                  <View style={styles.vlcSyncRow}>
-                    <Text style={styles.vlcStyleLabel}>Sincronía</Text>
-                    <View style={styles.vlcSyncControls}>
-                      <Touchable
-                        scaleTo={0.9} haptic="selection"
-                        style={styles.vlcSyncBtn}
-                        onPress={() => bumpOffset(-0.5)}
+              {/* ── Estilo y sincronía del subtítulo ── */}
+              {trackPicker === 'style' && (
+                <View style={styles.menuPage}>
+                  <View style={styles.menuBackRow}>
+                    <Touchable
+                      scaleTo={0.9} haptic="selection" style={styles.menuBackBtn}
+                      onPress={() => setTrackPicker('media')}
+                      accessibilityRole="button" accessibilityLabel="Volver"
+                    >
+                      <SymbolView name="chevron.left" weight="semibold" tintColor="#fff" style={styles.menuBackIcon} />
+                    </Touchable>
+                    <Text style={styles.menuTitle}>Estilo y sincronía</Text>
+                  </View>
+                  <ScrollView style={styles.menuScroll} contentContainerStyle={styles.styleContent} showsVerticalScrollIndicator={false}>
+                    {/* Vista previa en vivo: cada cambio se ve al instante */}
+                    <View style={styles.previewBox}>
+                      <Text
+                        style={[
+                          styles.subtitleText,
+                          {
+                            fontSize: SUBTITLE_FONT_SIZE[subStyle.size] * 0.8,
+                            color: SUBTITLE_COLOR_CSS[subStyle.color],
+                            backgroundColor: subStyle.background === 'semi' ? 'rgba(0,0,0,0.6)' : 'transparent',
+                            textShadowColor: SUBTITLE_OUTLINE[subStyle.outline].color,
+                            textShadowRadius: SUBTITLE_OUTLINE[subStyle.outline].radius,
+                            textShadowOffset: { width: 0, height: SUBTITLE_OUTLINE[subStyle.outline].offsetY },
+                            opacity: SUBTITLE_OPACITY_VALUE[subStyle.opacity],
+                          },
+                        ]}
                       >
-                        <Text style={styles.vlcSyncBtnText}>−0,5s</Text>
+                        Así se ven tus subtítulos
+                      </Text>
+                    </View>
+                    <SubtitleStyleRow
+                      label="Tamaño"
+                      value={subStyle.size}
+                      options={[{ value: 'small', label: 'Chico' }, { value: 'medium', label: 'Medio' }, { value: 'large', label: 'Grande' }]}
+                      onChange={(size) => changeSubStyle({ size })}
+                    />
+                    <SubtitleStyleRow
+                      label="Color"
+                      value={subStyle.color}
+                      options={[{ value: 'white', label: 'Blanco' }, { value: 'yellow', label: 'Amarillo' }, { value: 'cyan', label: 'Cian' }]}
+                      onChange={(color) => changeSubStyle({ color })}
+                    />
+                    <SubtitleStyleRow
+                      label="Fondo"
+                      value={subStyle.background}
+                      options={[{ value: 'none', label: 'Sin fondo' }, { value: 'semi', label: 'Con fondo' }]}
+                      onChange={(background) => changeSubStyle({ background })}
+                    />
+                    <SubtitleStyleRow
+                      label="Borde"
+                      value={subStyle.outline}
+                      options={[{ value: 'none', label: 'Ninguno' }, { value: 'soft', label: 'Suave' }, { value: 'strong', label: 'Fuerte' }]}
+                      onChange={(outline) => changeSubStyle({ outline })}
+                    />
+                    <SubtitleStyleRow
+                      label="Posición"
+                      value={subStyle.position}
+                      options={[{ value: 'low', label: 'Abajo' }, { value: 'mid', label: 'Medio' }, { value: 'high', label: 'Alto' }]}
+                      onChange={(position) => changeSubStyle({ position })}
+                    />
+                    <SubtitleStyleRow
+                      label="Opacidad"
+                      value={subStyle.opacity}
+                      options={[{ value: 'full', label: '100%' }, { value: 'high', label: '85%' }, { value: 'medium', label: '70%' }]}
+                      onChange={(opacity) => changeSubStyle({ opacity })}
+                    />
+                    {/* Sincronía: los .srt vienen cronometrados para otro
+                        release, casi siempre hay desfase. Se guarda por
+                        título/episodio. */}
+                    <Text style={styles.styleLabel}>Sincronía</Text>
+                    <View style={styles.syncRow}>
+                      <Touchable scaleTo={0.9} haptic="selection" style={styles.syncBtn} onPress={() => bumpOffset(-0.5)}
+                        accessibilityRole="button" accessibilityLabel="Atrasar medio segundo">
+                        <SymbolView name="minus" weight="bold" tintColor="#fff" style={styles.syncIcon} />
                       </Touchable>
-                      <Touchable
-                        scaleTo={0.92} haptic="light"
-                        style={styles.vlcSyncValue}
-                        onPress={() => bumpOffset(-subOffset)}
-                      >
-                        <Text style={styles.vlcSyncValueText}>
-                          {subOffset === 0 ? '0s' : `${subOffset > 0 ? '+' : ''}${subOffset.toFixed(1)}s`}
+                      <Touchable scaleTo={0.94} haptic="light" style={styles.syncValue} onPress={() => bumpOffset(-subOffset)}
+                        accessibilityRole="button" accessibilityLabel="Volver a cero">
+                        <Text style={styles.syncValueText}>
+                          {subOffset === 0 ? 'En sincronía' : `${subOffset > 0 ? '+' : ''}${subOffset.toFixed(1)} s`}
                         </Text>
                       </Touchable>
-                      <Touchable
-                        scaleTo={0.9} haptic="selection"
-                        style={styles.vlcSyncBtn}
-                        onPress={() => bumpOffset(0.5)}
-                      >
-                        <Text style={styles.vlcSyncBtnText}>+0,5s</Text>
+                      <Touchable scaleTo={0.9} haptic="selection" style={styles.syncBtn} onPress={() => bumpOffset(0.5)}
+                        accessibilityRole="button" accessibilityLabel="Adelantar medio segundo">
+                        <SymbolView name="plus" weight="bold" tintColor="#fff" style={styles.syncIcon} />
                       </Touchable>
                     </View>
-                  </View>
-                  <Text style={styles.vlcSyncHint}>
-                    Si el texto va adelantado, sube el valor. Toca el número para volver a 0.
-                  </Text>
+                    <Text style={styles.syncHint}>Si el texto aparece antes que la voz, subí el valor. Tocá el centro para volver a 0.</Text>
+                    {isNativeSub && (
+                      <Text style={styles.menuNotice}>
+                        Estás viendo una pista del archivo: estos ajustes solo se aplican al subtítulo en español descargado.
+                      </Text>
+                    )}
+                  </ScrollView>
+                </View>
+              )}
 
-                  {/* El estilo (y la sincronía) solo afectan al subtítulo que
-                      descargamos y dibujamos nosotros. Las pistas incrustadas
-                      en el archivo las renderiza VLCKit por dentro y no expone
-                      control de apariencia — ver el comentario de
-                      lib/subtitleStyle.ts. Se avisa en vez de dejar que el
-                      usuario mueva controles que no hacen nada. */}
-                  {isNativeSub && (
-                    <Text style={styles.vlcPickerNotice}>
-                      Estás viendo una pista incrustada en el archivo: estos ajustes solo
-                      se aplican al subtítulo en español que descargamos.
-                    </Text>
-                  )}
-                </ScrollView>
-              ) : (
-                <ScrollView
-                  style={styles.vlcPickerList}
-                  contentContainerStyle={styles.vlcPickerListContent}
-                  showsVerticalScrollIndicator={false}
-                >
-                  {trackPicker === 'audio' && audioTracks.map((t) => {
-                    const selected = selectedAudioTrack === t.id
-                    return (
-                      <Touchable
-                        key={t.id}
-                        scaleTo={0.98}
-                        haptic="selection"
-                        style={styles.vlcPickerRow}
-                        onPress={() => { setSelectedAudioTrack(t.id); setTrackPicker(null) }}
-                      >
-                        <Text style={[styles.vlcPickerRowText, selected && styles.vlcPickerRowTextActive]} numberOfLines={1}>
-                          {t.label}
-                        </Text>
-                        {selected && <SymbolView name="checkmark.circle.fill" tintColor="#fff" style={styles.vlcIcon} />}
-                      </Touchable>
-                    )
-                  })}
-                  {trackPicker === 'audio' && audioTracks.length === 0 && (
-                    <Text style={styles.vlcPickerEmpty}>Esta fuente solo trae una pista de audio</Text>
-                  )}
+              {/* ── Velocidad ── */}
+              {trackPicker === 'speed' && (
+                <View style={styles.menuPage}>
+                  <MenuHeader icon="gauge.with.dots.needle.67percent" title="Velocidad" />
+                  <ScrollView style={styles.menuScroll} showsVerticalScrollIndicator={false}>
+                    {RATES.map((r) => (
+                      <MenuRow
+                        key={r}
+                        label={r === 1 ? 'Normal' : `${formatRate(r)}×`}
+                        selected={rate === r}
+                        onPress={() => { setRate(r); setTrackPicker(null) }}
+                      />
+                    ))}
+                  </ScrollView>
+                </View>
+              )}
 
-                  {trackPicker === 'quality' && (
-                    sourcesLoading ? (
-                      <ActivityIndicator color="#fff" style={styles.vlcPickerLoading} />
+              {/* ── Calidad (fuentes) ── */}
+              {trackPicker === 'quality' && (
+                <View style={styles.menuPage}>
+                  <MenuHeader icon="sparkles.tv" title="Calidad" />
+                  <ScrollView style={styles.menuScroll} showsVerticalScrollIndicator={false}>
+                    {sourcesLoading ? (
+                      <ActivityIndicator color="#fff" style={styles.menuLoading} />
                     ) : sources.length === 0 ? (
-                      <Text style={styles.vlcPickerEmpty}>No hay otras fuentes disponibles</Text>
+                      <Text style={styles.menuEmpty}>No hay otras fuentes disponibles</Text>
                     ) : (
                       sources.map((s) => {
-                        const active = s.i === activeSourceIndex
-                        // Badge de idioma de la fuente (igual que en la TV): verde =
-                        // latino/español (probable latino), ámbar = castellano
-                        // (España, no lo que busca un usuario latino), gris = otros.
                         const lang = audioLangLabel(s.langs)
-                        const tone =
-                          lang === 'Latino' || lang === 'Español' ? 'es'
-                          : lang === 'Castellano' ? 'cast'
-                          : 'other'
+                        const tone = lang === 'Latino' || lang === 'Español' ? 'es' : lang === 'Castellano' ? 'cast' : 'other'
                         return (
-                          <Touchable
+                          <MenuRow
                             key={s.i}
-                            scaleTo={0.98}
-                            haptic="selection"
-                            style={styles.vlcPickerRow}
+                            label={describeSource(s)}
+                            detail={s.label}
+                            selected={s.i === activeSourceIndex}
+                            badge={lang ? { text: lang, tone } : undefined}
                             onPress={() => { onPickSource?.(s.i); setTrackPicker(null) }}
-                          >
-                            <View style={styles.vlcQualityInfo}>
-                              <Text style={[styles.vlcPickerRowText, active && styles.vlcPickerRowTextActive]} numberOfLines={1}>
-                                {describeSource(s)}
-                              </Text>
-                              <Text style={styles.vlcQualitySub} numberOfLines={1}>{s.label}</Text>
-                            </View>
-                            {lang && (
-                              <View style={[
-                                styles.vlcLangBadge,
-                                tone === 'es' ? styles.vlcLangBadgeEs : tone === 'cast' ? styles.vlcLangBadgeCast : styles.vlcLangBadgeOther,
-                              ]}>
-                                <Text style={[styles.vlcLangBadgeText, tone === 'other' ? styles.vlcLangBadgeTextOther : styles.vlcLangBadgeTextDark]}>
-                                  {lang}
-                                </Text>
-                              </View>
-                            )}
-                            {active && <SymbolView name="checkmark.circle.fill" tintColor="#fff" style={styles.vlcIcon} />}
-                          </Touchable>
+                          />
                         )
                       })
-                    )
-                  )}
-
-                  {trackPicker === 'text' && (
-                    <>
-                      {srtCues.length > 0 && (
-                        <Touchable
-                          scaleTo={0.98}
-                          haptic="selection"
-                          style={styles.vlcPickerRow}
-                          onPress={() => { chooseSubMode('external'); setTrackPicker(null) }}
-                        >
-                          <Text style={[styles.vlcPickerRowText, subMode === 'external' && styles.vlcPickerRowTextActive]} numberOfLines={1}>
-                            Español
-                          </Text>
-                          {subMode === 'external' && <SymbolView name="checkmark.circle.fill" tintColor="#fff" style={styles.vlcIcon} />}
-                        </Touchable>
-                      )}
-                      <Touchable
-                        scaleTo={0.98}
-                        haptic="selection"
-                        style={styles.vlcPickerRow}
-                        onPress={() => { chooseSubMode('none'); setTrackPicker(null) }}
-                      >
-                        <Text style={[styles.vlcPickerRowText, subMode === 'none' && styles.vlcPickerRowTextActive]} numberOfLines={1}>
-                          Ninguno
-                        </Text>
-                        {subMode === 'none' && <SymbolView name="checkmark.circle.fill" tintColor="#fff" style={styles.vlcIcon} />}
-                      </Touchable>
-                      {textTracks.map((t) => {
-                        const selected = subMode === String(t.id)
-                        return (
-                          <Touchable
-                            key={t.id}
-                            scaleTo={0.98}
-                            haptic="selection"
-                            style={styles.vlcPickerRow}
-                            onPress={() => { chooseSubMode(String(t.id)); setTrackPicker(null) }}
-                          >
-                            <Text style={[styles.vlcPickerRowText, selected && styles.vlcPickerRowTextActive]} numberOfLines={1}>
-                              {t.label}
-                            </Text>
-                            {selected && <SymbolView name="checkmark.circle.fill" tintColor="#fff" style={styles.vlcIcon} />}
-                          </Touchable>
-                        )
-                      })}
-                      {srtCues.length === 0 && textTracks.length === 0 && (
-                        <Text style={styles.vlcPickerEmpty}>Esta fuente no trae subtítulos</Text>
-                      )}
-                      {/* Por qué falta el español. Se muestra aunque el archivo
-                          traiga pistas propias: es justamente el caso confuso
-                          —hay subtítulos, pero ninguno en español y sin poder
-                          estilizar— y hasta ahora no se explicaba en ningún lado. */}
-                      {srtCues.length === 0 && !!subsDiagnosis && (
-                        <Text style={styles.vlcPickerEmpty}>{subsDiagnosis}</Text>
-                      )}
-                    </>
-                  )}
-                </ScrollView>
+                    )}
+                  </ScrollView>
+                </View>
               )}
-            </BlurView>
-          </View>
+            </Glass>
+          </Animated.View>
         </View>
       )}
     </View>
   )
 }
 
-// Fila de chips para el picker de "Estilo" de subtítulos (tamaño/color/fondo).
+// ── Piezas de la interfaz del reproductor ───────────────────────────────────
+
+const RATES = [0.5, 0.75, 1, 1.25, 1.5, 2]
+const formatRate = (r: number) => String(r).replace('.', ',')
+
+// Nombres de idioma legibles: muchos MKV traen pistas como "Track 2" o solo
+// el código ("eng", "spa"). Se muestra "Inglés", "Español latino"…
+const LANG_NAMES: Record<string, string> = {
+  en: 'Inglés', eng: 'Inglés', es: 'Español', spa: 'Español', fr: 'Francés', fre: 'Francés', fra: 'Francés',
+  pt: 'Portugués', por: 'Portugués', it: 'Italiano', ita: 'Italiano', de: 'Alemán', ger: 'Alemán', deu: 'Alemán',
+  ja: 'Japonés', jpn: 'Japonés', ko: 'Coreano', kor: 'Coreano', zh: 'Chino', chi: 'Chino', zho: 'Chino',
+  ru: 'Ruso', rus: 'Ruso', ar: 'Árabe', ara: 'Árabe', hi: 'Hindi', hin: 'Hindi',
+}
+function prettyTrack(t: TrackInfo): string {
+  const lang = (t.lang ?? '').toLowerCase()
+  const base = LANG_NAMES[lang.split(/[-_]/)[0]]
+  const generic = /^(track|pista|subtítulo|subtitle)\s*\d+$/i.test(t.label.trim()) || t.label.trim().toLowerCase() === lang
+  if (generic && base) return isLatinTrack(t) ? 'Español latino' : base
+  return t.label
+}
+
+// −10 / +10 con un pequeño giro del ícono al tocar (como el de Apple).
+function SkipButton({ direction, onPress }: { direction: 'back' | 'forward'; onPress: () => void }) {
+  const spin = useRef(new Animated.Value(0)).current
+  const sign = direction === 'back' ? -1 : 1
+  return (
+    <GlassButton
+      radius={29}
+      scaleTo={0.88}
+      style={styles.skipBtn}
+      onPress={() => {
+        spin.setValue(0)
+        Animated.sequence([
+          Animated.timing(spin, { toValue: 1, duration: 120, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+          Animated.spring(spin, { toValue: 0, speed: 18, bounciness: 10, useNativeDriver: true }),
+        ]).start()
+        onPress()
+      }}
+      accessibilityRole="button"
+      accessibilityLabel={direction === 'back' ? 'Retroceder 10 segundos' : 'Adelantar 10 segundos'}
+    >
+      <Animated.View style={{ transform: [{ rotate: spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', `${sign * 40}deg`] }) }] }}>
+        <SymbolView name={direction === 'back' ? 'gobackward.10' : 'goforward.10'} tintColor="#fff" style={styles.skipIcon} />
+      </Animated.View>
+    </GlassButton>
+  )
+}
+
+// Botón con ícono y texto de la fila de acciones (abajo a la derecha).
+function ActionPill({
+  icon, label, active, onPress,
+}: { icon: string; label: string; active?: boolean; onPress: () => void }) {
+  return (
+    <GlassButton
+      radius={18}
+      variant="regular"
+      // Abierto: el vidrio se tiñe de blanco y el texto pasa a negro.
+      tint={active ? 'rgba(255,255,255,0.92)' : undefined}
+      scaleTo={0.94}
+      haptic="selection"
+      style={styles.actionPill}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ expanded: !!active }}
+    >
+      <SymbolView name={icon as never} tintColor={active ? '#000' : '#fff'} style={styles.actionIcon} />
+      <Text style={[styles.actionText, active && styles.actionTextActive]} numberOfLines={1}>{label}</Text>
+    </GlassButton>
+  )
+}
+
+function MenuHeader({ icon, title }: { icon: string; title: string }) {
+  return (
+    <View style={styles.menuHeader} accessibilityRole="header">
+      <SymbolView name={icon as never} tintColor="rgba(255,255,255,0.6)" style={styles.menuHeaderIcon} />
+      <Text style={styles.menuHeaderText}>{title}</Text>
+    </View>
+  )
+}
+
+// Fila de menú al estilo de los menús de iOS: el check va a la IZQUIERDA en
+// una columna fija (así los textos quedan alineados haya o no selección).
+function MenuRow({
+  label, detail, selected, icon, chevron, badge, onPress,
+}: {
+  label: string
+  detail?: string
+  selected?: boolean
+  icon?: string
+  chevron?: boolean
+  badge?: { text: string; tone: 'es' | 'cast' | 'other' }
+  onPress: () => void
+}) {
+  return (
+    <Touchable
+      scaleTo={0.98}
+      haptic="selection"
+      style={[styles.menuRow, selected && styles.menuRowSelected]}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={detail ? `${label}, ${detail}` : label}
+      accessibilityState={{ selected: !!selected }}
+    >
+      <View style={styles.menuCheckCol}>
+        {icon ? (
+          <SymbolView name={icon as never} tintColor="#fff" style={styles.menuRowIcon} />
+        ) : selected ? (
+          <SymbolView name="checkmark" weight="bold" tintColor="#fff" style={styles.menuCheck} />
+        ) : null}
+      </View>
+      <View style={styles.menuRowBody}>
+        <Text style={[styles.menuRowText, selected && styles.menuRowTextSelected]} numberOfLines={1}>{label}</Text>
+        {!!detail && <Text style={styles.menuRowDetail} numberOfLines={1}>{detail}</Text>}
+      </View>
+      {badge && (
+        <View style={[styles.badge, badge.tone === 'es' ? styles.badgeEs : badge.tone === 'cast' ? styles.badgeCast : styles.badgeOther]}>
+          <Text style={[styles.badgeText, badge.tone === 'other' && styles.badgeTextLight]}>{badge.text}</Text>
+        </View>
+      )}
+      {chevron && <SymbolView name="chevron.right" weight="semibold" tintColor="rgba(255,255,255,0.5)" style={styles.menuChevron} />}
+    </Touchable>
+  )
+}
+
+// Control segmentado para el estilo del subtítulo.
 function SubtitleStyleRow<T extends string>({
   label, value, options, onChange,
 }: {
@@ -1673,23 +1809,24 @@ function SubtitleStyleRow<T extends string>({
   onChange: (v: T) => void
 }) {
   return (
-    <View style={styles.vlcStyleRow}>
-      <Text style={styles.vlcStyleLabel}>{label}</Text>
-      <View style={styles.vlcStyleChips}>
+    <View style={styles.styleRow}>
+      <Text style={styles.styleLabel}>{label}</Text>
+      <View style={styles.segmented} accessibilityRole="radiogroup" accessibilityLabel={label}>
         {options.map((opt) => {
           const selected = opt.value === value
           return (
-            <Touchable
-              key={opt.value}
-              scaleTo={0.95}
-              haptic="selection"
-              style={[styles.vlcStyleChip, selected && styles.vlcStyleChipActive]}
-              onPress={() => onChange(opt.value)}
-            >
-              <Text style={[styles.vlcStyleChipText, selected && styles.vlcStyleChipTextActive]} numberOfLines={1}>
-                {opt.label}
-              </Text>
-            </Touchable>
+            <View key={opt.value} style={styles.segmentSlot}>
+              <Touchable
+                scaleTo={0.95}
+                haptic="selection"
+                style={[styles.segment, selected && styles.segmentActive]}
+                onPress={() => onChange(opt.value)}
+                accessibilityRole="radio"
+                accessibilityState={{ selected }}
+              >
+                <Text style={[styles.segmentText, selected && styles.segmentTextActive]} numberOfLines={1}>{opt.label}</Text>
+              </Touchable>
+            </View>
           )
         })}
       </View>
@@ -1726,36 +1863,53 @@ function NextEpisodeScreen({
     return () => clearInterval(interval)
   }, [])
 
-  const backdropUri = backdropUrl(backdrop, 'w780')
+  const backdropUri = backdropUrl(backdrop, 'w1280')
 
   return (
     <View style={styles.nextContainer}>
       {backdropUri && (
-        <Image source={backdropUri} style={StyleSheet.absoluteFill} contentFit="cover" />
+        <Image source={backdropUri} style={StyleSheet.absoluteFill} contentFit="cover" transition={300} />
       )}
-      <View style={styles.nextOverlay} />
+      {/* Degradé de izquierda a derecha y de abajo hacia arriba: la imagen
+          se ve, y el texto (abajo a la izquierda) se lee. */}
+      <LinearGradient
+        colors={['rgba(0,0,0,0.88)', 'rgba(0,0,0,0.45)', 'rgba(0,0,0,0)']}
+        locations={[0, 0.5, 1]}
+        start={{ x: 0, y: 0.5 }}
+        end={{ x: 1, y: 0.5 }}
+        style={StyleSheet.absoluteFill}
+      />
+      <LinearGradient
+        colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.75)']}
+        locations={[0.4, 1]}
+        style={StyleSheet.absoluteFill}
+      />
 
       <View style={styles.nextContent}>
-        <Text style={styles.nextLabel}>Siguiente episodio</Text>
-        <Text style={styles.nextTitle}>{title}</Text>
-        <Text style={styles.nextEp}>Temporada {season}  ·  Episodio {episode}</Text>
-
-        <View style={styles.progressTrack}>
-          <Animated.View
-            style={[
-              styles.progressBar,
-              { width: progress.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }) },
-            ]}
-          />
-        </View>
+        <Text style={styles.nextLabel}>A continuación</Text>
+        <Text style={styles.nextTitle} numberOfLines={2}>{title}</Text>
+        <Text style={styles.nextEp}>Temporada {season} · Episodio {episode}</Text>
 
         <View style={styles.nextButtons}>
-          <Touchable scaleTo={0.95} haptic="medium" style={styles.playNextBtn} onPress={onPlay}>
+          {/* La cuenta regresiva llena el botón: se entiende sin leer el número. */}
+          <Touchable
+            scaleTo={0.95} haptic="medium" style={styles.playNextBtn} onPress={onPlay}
+            accessibilityRole="button" accessibilityLabel={`Reproducir siguiente episodio, empieza en ${seconds} segundos`}
+          >
+            <Animated.View
+              style={[
+                styles.playNextFill,
+                { width: progress.interpolate({ inputRange: [0, 1], outputRange: ['100%', '0%'] }) },
+              ]}
+            />
             <SymbolView name="play.fill" tintColor="#000" style={styles.playNextIcon} />
-            <Text style={styles.playNextText}>Reproducir ({seconds}s)</Text>
+            <Text style={styles.playNextText}>Reproducir · {seconds}</Text>
           </Touchable>
 
-          <Touchable scaleTo={0.95} haptic="light" style={styles.backBtn} onPress={onBack}>
+          <Touchable
+            scaleTo={0.95} haptic="light" style={styles.backBtn} onPress={onBack}
+            accessibilityRole="button" accessibilityLabel="Salir"
+          >
             <Text style={styles.backText}>Salir</Text>
           </Touchable>
         </View>
@@ -1770,8 +1924,14 @@ const styles = StyleSheet.create({
   orientationCover: { ...StyleSheet.absoluteFillObject, backgroundColor: '#000', zIndex: 1000 },
   // Carga mínima: spinner centrado, orientación-agnóstico.
   loadingSpinnerWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#000' },
-  loadingBack: { position: 'absolute', top: 50, left: 20, padding: 6 },
-  loadingBackIcon: { width: 26, height: 26 },
+  loadingBack: {
+    position: 'absolute', top: 24, left: 24,
+    width: 42, height: 42, borderRadius: 21,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,255,0.22)',
+  },
+  loadingBackIcon: { width: 16, height: 16 },
   fill: { flex: 1, backgroundColor: '#000' },
 
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32 },
@@ -1807,28 +1967,29 @@ const styles = StyleSheet.create({
   langOptionText: { color: colors.textDim, fontSize: 13, fontWeight: '600' },
   langOptionTextActive: { color: '#000', fontWeight: '700' },
 
-  // Pill siguiente episodio
+  // Pill siguiente episodio: blanca, con la cuenta llenándola de a poco.
   nextPill: {
     position: 'absolute',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: '#fff',
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    borderRadius: 12,
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: 'rgba(255,255,255,0.82)',
+    paddingVertical: 13, paddingHorizontal: 20,
+    borderRadius: 24, borderCurve: 'continuous',
+    overflow: 'hidden',
     zIndex: 30,
-    shadowColor: '#000',
-    shadowOpacity: 0.4,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
+    shadowColor: '#000', shadowOpacity: 0.4, shadowRadius: 12, shadowOffset: { width: 0, height: 4 },
   },
-  nextPillIcon: { width: 15, height: 15 },
+  nextPillFill: { ...StyleSheet.absoluteFillObject, right: undefined, backgroundColor: '#fff' },
+  nextPillIcon: { width: 14, height: 14 },
   nextPillText: { color: '#000', fontSize: 15, fontWeight: '700' },
 
-  // Player VLCKit: controles propios
+  // ── Reproductor (VLC): controles ──
   vlcZoomClip: { overflow: 'hidden' },
   vlcBufferCenter: { alignItems: 'center', justifyContent: 'center' },
+  bufferRing: {
+    width: 76, height: 76, borderRadius: 38,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.35)',
+  },
   // Feedback breve al pellizco de ajustar/llenar pantalla.
   fillHint: {
     position: 'absolute', top: '46%', left: 0, right: 0,
@@ -1836,195 +1997,143 @@ const styles = StyleSheet.create({
   },
   fillHintIcon: { width: 26, height: 26 },
   fillHintText: { color: '#fff', fontSize: 13, fontWeight: '600' },
-  // Feedback breve al doble tap de retroceder/adelantar 10s — un círculo
-  // translúcido centrado en la mitad de pantalla que se tocó.
+  // Doble tap: un círculo esmerilado del lado tocado, con el total de la racha.
   seekHint: {
-    position: 'absolute', top: '50%', marginTop: -34,
-    width: 68, height: 68, borderRadius: 34,
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    alignItems: 'center', justifyContent: 'center',
+    position: 'absolute', top: '50%', marginTop: -55,
+    width: 110, height: 110, borderRadius: 55,
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,255,0.22)',
+    alignItems: 'center', justifyContent: 'center', gap: 6,
   },
-  seekHintLeft: { left: '18%' },
-  seekHintRight: { right: '18%' },
-  // Overlay del subtítulo en español (renderizado en JS, no por VLCKit — ver
-  // downloadSpanishSubs/SrtCue). `bottom` se anima según si los controles
-  // están visibles para no quedar tapado por la barra de progreso.
-  subtitleOverlay: {
-    position: 'absolute', left: 20, right: 20,
-    alignItems: 'center',
-  },
+  seekHintLeft: { left: '14%' },
+  seekHintRight: { right: '14%' },
+  seekHintIcon: { width: 26, height: 20 },
+  seekHintText: { color: '#fff', fontSize: 15, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  // Overlay del subtítulo en español (renderizado en JS, no por VLCKit).
+  subtitleOverlay: { position: 'absolute', left: 20, right: 20, alignItems: 'center' },
   subtitleText: {
-    fontWeight: '700',
-    textAlign: 'center',
-    // El contorno ya no vive acá: lo define subStyle.outline en el render.
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 6,
-    overflow: 'hidden',
+    fontWeight: '700', textAlign: 'center',
+    paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, overflow: 'hidden',
   },
-  vlcScrim: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.25)',
-  },
-  vlcTopBar: {
-    position: 'absolute', left: 16, right: 16,
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-  },
-  vlcTopRight: {
-    flexDirection: 'row', alignItems: 'center', gap: 10,
-  },
-  vlcIconBtn: {
-    width: 38, height: 38, borderRadius: 19,
-    backgroundColor: 'rgba(0,0,0,0.45)',
-    alignItems: 'center', justifyContent: 'center',
-  },
-  // AVRoutePickerView dibuja su propio glifo de AirPlay; lo centramos dentro
-  // del botón circular para que combine con los demás íconos.
-  airplayBtn: { width: 24, height: 24 },
-  vlcIcon: { width: 18, height: 18 },
-  vlcCenterControls: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  vlcPlayBtn: {
-    width: 68, height: 68, borderRadius: 34,
-    backgroundColor: 'rgba(0,0,0,0.45)',
-    alignItems: 'center', justifyContent: 'center',
-  },
-  vlcPlayIcon: { width: 26, height: 26 },
-  vlcSkipBtn: {
-    width: 52, height: 52, borderRadius: 26,
-    backgroundColor: 'rgba(0,0,0,0.45)',
-    alignItems: 'center', justifyContent: 'center',
-  },
-  vlcSkipIcon: { width: 22, height: 22 },
-  vlcBottomBar: {
-    position: 'absolute', left: 16, right: 16,
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-  },
-  vlcTime: { color: '#fff', fontSize: 12, fontWeight: '600', width: 48, textAlign: 'center' },
-  // left: 16 (margen de la barra) + 48 (ancho del tiempo) → arranca donde
-  // arranca el scrubber, no donde arranca el "1:26:04". Así queda ópticamente
-  // alineado con la barra y no con el borde.
-  vlcTitleBlock: { position: 'absolute', left: 64, right: 64 },
-  vlcTitleText: {
-    color: '#fff', fontSize: 17, fontWeight: '700', letterSpacing: -0.3,
-    // Sombra: el título va sobre el video, y sin ella desaparece en escenas claras.
-    textShadowColor: 'rgba(0,0,0,0.65)', textShadowRadius: 6,
-  },
-  vlcEpisodeText: {
-    color: colors.textDim, fontSize: 13.5, fontWeight: '500', marginTop: 2,
-    textShadowColor: 'rgba(0,0,0,0.65)', textShadowRadius: 6,
-  },
-  vlcSlider: { flex: 1, height: 32 },
-  // Dropdown disimulado anclado al botón de "..." del top bar — no tapa la
-  // pantalla, solo la tarjeta liquid glass flota cerca del ancla.
-  vlcDropdownWrap: {
-    position: 'absolute', right: 16,
-    width: 320,
-    borderRadius: 22,
-    shadowColor: '#000', shadowOpacity: 0.4, shadowRadius: 20, shadowOffset: { width: 0, height: 10 },
-  },
-  vlcPickerCard: {
-    flex: 1,
-    borderRadius: 22,
-    borderWidth: 1,
-    borderColor: colors.border,
-    overflow: 'hidden',
-    paddingTop: 12, paddingHorizontal: 10, paddingBottom: 10,
-  },
-  // Brillo sutil arriba — lo que le da el aire "vidrio" en vez de "panel gris".
-  vlcPickerSheen: { ...StyleSheet.absoluteFillObject, height: '45%' },
-  vlcPickerTabs: {
-    flexDirection: 'row', gap: 6,
-    backgroundColor: 'rgba(120,120,128,0.24)',
-    borderRadius: 16, padding: 4, marginBottom: 10,
-  },
-  // El flex:1 real vive acá (no en vlcPickerTab) — ver comentario en el JSX.
-  vlcPickerTabSlot: { flex: 1 },
-  vlcPickerLoading: { paddingVertical: 26 },
-  // La fila de calidad lleva dos líneas, así que el texto necesita su propia
-  // columna para no empujar al checkmark fuera de la tarjeta.
-  vlcQualityInfo: { flex: 1, gap: 2 },
-  vlcQualitySub: { color: colors.textMuted, fontSize: 11.5 },
-  // Badge de idioma de la fuente (mismos colores que la TV).
-  vlcLangBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 },
-  vlcLangBadgeEs: { backgroundColor: colors.success },              // verde = latino / español (probable latino)
-  vlcLangBadgeCast: { backgroundColor: '#FF9F0A' },            // ámbar = castellano (España)
-  vlcLangBadgeOther: { backgroundColor: 'rgba(120,120,128,0.7)' }, // gris = otros idiomas
-  vlcLangBadgeText: { fontSize: 12, fontWeight: '800' },
-  vlcLangBadgeTextDark: { color: '#000' },
-  vlcLangBadgeTextOther: { color: '#fff' },
-  vlcPickerTab: {
-    paddingVertical: 9, borderRadius: 12,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  vlcPickerTabActive: { backgroundColor: '#fff' },
-  vlcIconSm: { width: 16, height: 16 },
-  vlcPickerSwitchRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 10,
-    paddingVertical: 12, paddingHorizontal: 12, marginBottom: 6,
-    backgroundColor: colors.hairline, borderRadius: 14,
-    borderWidth: 1, borderColor: colors.fill,
-  },
-  vlcPickerSwitchText: { color: '#fff', fontSize: 14, fontWeight: '700', flexShrink: 1 },
-  // flex:1 en vez de maxHeight — llena siempre el alto fijo del dropdown
-  // (dropdownHeight, calculado en VlcPlayer), scrollea si hay más pistas de
-  // las que entran, en vez de estirar la tarjeta entera.
-  vlcPickerList: { flex: 1 },
-  vlcPickerListContent: { flexGrow: 1, justifyContent: 'center' },
-  vlcPickerRow: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingVertical: 12, paddingHorizontal: 12, gap: 10,
-    borderRadius: 14,
-  },
-  vlcPickerRowText: { color: colors.text, fontSize: 15, flexShrink: 1 },
-  vlcPickerRowTextActive: { color: '#fff', fontWeight: '700' },
-  vlcPickerNotice: {
-    color: colors.warning, fontSize: 12.5, lineHeight: 17,
-    paddingHorizontal: 14, paddingBottom: 10, paddingTop: 2,
-  },
-  vlcPickerEmpty: {
-    color: colors.textMuted, fontSize: 13, textAlign: 'center',
-    paddingVertical: 20, paddingHorizontal: 12,
-  },
+  scrimTop: { position: 'absolute', top: 0, left: 0, right: 0, height: 150 },
+  scrimBottom: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 230 },
+  pausedVeil: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.18)' },
 
-  // Picker de "Estilo" de subtítulos — las etiquetas "flotan" con text-shadow
-  // sutil (sin fondo propio, como si estuvieran suspendidas sobre el vidrio).
-  // flex:1 + centrado: llena el mismo alto fijo que la lista de pistas.
-  // Sin flex ni justifyContent: es el contentContainer de un ScrollView, así
-  // que crece con el contenido y scrollea si no entra.
-  vlcStyleContent: { paddingHorizontal: 4, paddingVertical: 14, gap: 16 },
-  vlcStyleRow: { gap: 10 },
-  vlcSyncRow: {
+  topBar: { position: 'absolute', flexDirection: 'row', alignItems: 'center', gap: 14 },
+  topTitle: { flex: 1 },
+  topTitleText: {
+    color: '#fff', fontSize: 18, fontWeight: '800', letterSpacing: -0.3,
+    textShadowColor: 'rgba(0,0,0,0.6)', textShadowRadius: 6,
+  },
+  topSubText: {
+    color: 'rgba(255,255,255,0.7)', fontSize: 13.5, fontWeight: '600', marginTop: 1,
+    textShadowColor: 'rgba(0,0,0,0.6)', textShadowRadius: 6,
+  },
+  // Botones de Liquid Glass (GlassButton): el vidrio pone forma y borde.
+  roundBtn: { width: 42, height: 42, alignItems: 'center', justifyContent: 'center' },
+  roundIcon: { width: 16, height: 16 },
+  // AVRoutePickerView dibuja su propio glifo de AirPlay; centrado en el botón.
+  airplayBtn: { width: 24, height: 24 },
+
+  centerRow: {
+    ...StyleSheet.absoluteFillObject,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 52,
+  },
+  playBtn: { width: 84, height: 84, alignItems: 'center', justifyContent: 'center' },
+  playIcon: { width: 34, height: 34 },
+  skipBtn: { width: 58, height: 58, alignItems: 'center', justifyContent: 'center' },
+  skipIcon: { width: 28, height: 28 },
+
+  bottomArea: { position: 'absolute', gap: 6 },
+  actionsRow: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginBottom: 2 },
+  actionPill: { flexDirection: 'row', alignItems: 'center', gap: 7, height: 38, paddingHorizontal: 15 },
+  actionIcon: { width: 16, height: 16 },
+  actionText: { color: '#fff', fontSize: 13.5, fontWeight: '700' },
+  actionTextActive: { color: '#000' },
+
+  // ── Menús ──
+  menuWrap: {
+    position: 'absolute',
+    shadowColor: '#000', shadowOpacity: 0.45, shadowRadius: 28, shadowOffset: { width: 0, height: 14 },
+  },
+  menuCard: { padding: 8, flexShrink: 1 },
+  menuColumns: { flexDirection: 'row', flexShrink: 1 },
+  menuColumn: { flex: 1, flexShrink: 1 },
+  menuDivider: { width: StyleSheet.hairlineWidth, backgroundColor: 'rgba(255,255,255,0.16)', marginVertical: 10 },
+  menuPage: { flexShrink: 1 },
+  menuScroll: { flexGrow: 0, flexShrink: 1 },
+  menuHeader: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 12, paddingTop: 8, paddingBottom: 6 },
+  menuHeaderIcon: { width: 13, height: 13 },
+  menuHeaderText: {
+    color: 'rgba(255,255,255,0.6)', fontSize: 12, fontWeight: '700',
+    letterSpacing: 0.9, textTransform: 'uppercase',
+  },
+  menuRow: {
     flexDirection: 'row', alignItems: 'center',
-    justifyContent: 'space-between', marginTop: 4,
+    minHeight: 46, paddingVertical: 8, paddingRight: 12,
+    borderRadius: 14, borderCurve: 'continuous',
   },
-  vlcSyncControls: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  vlcSyncBtn: {
-    paddingHorizontal: 12, paddingVertical: 7, borderRadius: 10,
-    backgroundColor: colors.hairline,
+  menuRowSelected: { backgroundColor: 'rgba(255,255,255,0.1)' },
+  menuCheckCol: { width: 36, alignItems: 'center' },
+  menuCheck: { width: 14, height: 14 },
+  menuRowIcon: { width: 17, height: 17 },
+  menuRowBody: { flex: 1, gap: 1 },
+  menuRowText: { color: 'rgba(255,255,255,0.88)', fontSize: 15.5, fontWeight: '500' },
+  menuRowTextSelected: { color: '#fff', fontWeight: '700' },
+  menuRowDetail: { color: 'rgba(255,255,255,0.5)', fontSize: 12 },
+  menuChevron: { width: 9, height: 14, marginLeft: 8 },
+  menuNotice: {
+    color: colors.warning, fontSize: 12.5, lineHeight: 17,
+    paddingHorizontal: 12, paddingVertical: 8,
   },
-  vlcSyncBtnText: { color: '#fff', fontSize: 13, fontWeight: '600' },
-  vlcSyncValue: { minWidth: 58, alignItems: 'center', paddingVertical: 7 },
-  vlcSyncValueText: { color: '#fff', fontSize: 14, fontWeight: '700' },
-  vlcSyncHint: {
-    color: colors.textMuted, fontSize: 11.5, marginTop: 8, lineHeight: 16,
+  menuEmpty: { color: 'rgba(255,255,255,0.5)', fontSize: 13, paddingHorizontal: 12, paddingVertical: 14 },
+  menuLoading: { paddingVertical: 26 },
+  menuBackRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 4, paddingTop: 2, paddingBottom: 4 },
+  menuBackBtn: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.1)' },
+  menuBackIcon: { width: 11, height: 16 },
+  menuTitle: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  // Badge de idioma de la fuente (mismos colores que la TV).
+  badge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, marginLeft: 8 },
+  badgeEs: { backgroundColor: colors.success },
+  badgeCast: { backgroundColor: '#FF9F0A' },
+  badgeOther: { backgroundColor: 'rgba(120,120,128,0.7)' },
+  badgeText: { fontSize: 11.5, fontWeight: '800', color: '#000' },
+  badgeTextLight: { color: '#fff' },
+
+  // Estilo del subtítulo
+  styleContent: { paddingHorizontal: 8, paddingBottom: 10, gap: 14 },
+  previewBox: {
+    height: 74, borderRadius: 14, borderCurve: 'continuous',
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: '#3A4250',
+    marginTop: 4,
   },
-  vlcStyleLabel: {
-    color: colors.textDim, fontSize: 12, fontWeight: '600',
-    textTransform: 'uppercase', letterSpacing: 1.1, paddingHorizontal: 4,
-    textShadowColor: 'rgba(0,0,0,0.5)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 3,
+  styleRow: { gap: 8 },
+  styleLabel: {
+    color: 'rgba(255,255,255,0.6)', fontSize: 12, fontWeight: '700',
+    letterSpacing: 0.9, textTransform: 'uppercase', paddingHorizontal: 4,
   },
-  vlcStyleChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, paddingHorizontal: 4 },
-  vlcStyleChip: {
-    paddingVertical: 8, paddingHorizontal: 14, borderRadius: 12,
-    backgroundColor: colors.fill,
-    borderWidth: 1, borderColor: colors.fill,
+  segmented: {
+    flexDirection: 'row', padding: 3, borderRadius: 12, borderCurve: 'continuous',
+    backgroundColor: 'rgba(120,120,128,0.26)',
   },
-  vlcStyleChipActive: { backgroundColor: '#fff', borderColor: '#fff' },
-  vlcStyleChipText: { color: colors.textDim, fontSize: 13, fontWeight: '600' },
-  vlcStyleChipTextActive: { color: '#000', fontWeight: '700' },
+  segmentSlot: { flex: 1 },
+  segment: { paddingVertical: 8, borderRadius: 9, borderCurve: 'continuous', alignItems: 'center' },
+  segmentActive: { backgroundColor: 'rgba(255,255,255,0.92)' },
+  segmentText: { color: 'rgba(255,255,255,0.85)', fontSize: 13, fontWeight: '600' },
+  segmentTextActive: { color: '#000', fontWeight: '700' },
+  syncRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  syncBtn: {
+    width: 44, height: 40, borderRadius: 12, borderCurve: 'continuous',
+    backgroundColor: 'rgba(120,120,128,0.3)', alignItems: 'center', justifyContent: 'center',
+  },
+  syncIcon: { width: 14, height: 14 },
+  syncValue: {
+    flex: 1, height: 40, borderRadius: 12, borderCurve: 'continuous',
+    alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.08)',
+  },
+  syncValueText: { color: '#fff', fontSize: 14, fontWeight: '700', fontVariant: ['tabular-nums'] },
+  syncHint: { color: 'rgba(255,255,255,0.5)', fontSize: 12, lineHeight: 16, paddingHorizontal: 4, marginTop: -6 },
 
   errIcon: { width: 48, height: 48 },
   errText: { color: '#fff', fontSize: 18, fontWeight: '700', marginTop: 16 },
@@ -2044,66 +2153,28 @@ const styles = StyleSheet.create({
 
   // Siguiente episodio (pantalla)
   nextContainer: { flex: 1, backgroundColor: '#000' },
-  nextOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.65)',
-  },
-  nextContent: {
-    flex: 1,
-    justifyContent: 'flex-end',
-    padding: 32,
-    paddingBottom: 60,
-  },
+  nextContent: { flex: 1, justifyContent: 'flex-end', paddingHorizontal: 48, paddingBottom: 48, maxWidth: 620 },
   nextLabel: {
-    color: colors.textDim,
-    fontSize: 13,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    marginBottom: 10,
+    color: 'rgba(255,255,255,0.7)', fontSize: 13, fontWeight: '700',
+    textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 8,
   },
-  nextTitle: {
-    color: '#fff',
-    fontSize: 28,
-    fontWeight: '800',
-    letterSpacing: -0.5,
-    marginBottom: 6,
-  },
-  nextEp: {
-    color: colors.textDim,
-    fontSize: 16,
-    marginBottom: 24,
-  },
-  progressTrack: {
-    height: 3,
-    backgroundColor: colors.border,
-    borderRadius: 2,
-    marginBottom: 28,
-    overflow: 'hidden',
-  },
-  progressBar: {
-    height: '100%',
-    backgroundColor: '#fff',
-    borderRadius: 2,
-  },
-  nextButtons: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  nextTitle: { color: '#fff', fontSize: 32, fontWeight: '900', letterSpacing: -0.8, marginBottom: 6 },
+  nextEp: { color: 'rgba(255,255,255,0.75)', fontSize: 16, fontWeight: '600', marginBottom: 26 },
+  nextButtons: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   playNextBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    backgroundColor: '#fff',
-    paddingVertical: 14,
-    paddingHorizontal: 28,
-    borderRadius: 14,
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: 'rgba(255,255,255,0.72)',
+    paddingVertical: 14, paddingHorizontal: 28,
+    borderRadius: 26, borderCurve: 'continuous', overflow: 'hidden',
   },
+  playNextFill: { position: 'absolute', left: 0, top: 0, bottom: 0, backgroundColor: '#fff' },
   playNextIcon: { width: 16, height: 16 },
-  playNextText: { color: '#000', fontSize: 16, fontWeight: '700' },
+  playNextText: { color: '#000', fontSize: 16, fontWeight: '800', fontVariant: ['tabular-nums'] },
   backBtn: {
-    paddingVertical: 14,
-    paddingHorizontal: 20,
-    borderRadius: 14,
-    borderWidth: 1.5,
-    borderColor: colors.textMuted,
+    paddingVertical: 14, paddingHorizontal: 24,
+    borderRadius: 26, borderCurve: 'continuous',
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,255,0.25)',
   },
   backText: { color: '#fff', fontSize: 16, fontWeight: '600' },
 })

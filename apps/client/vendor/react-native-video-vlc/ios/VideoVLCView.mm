@@ -135,6 +135,11 @@ static int VideoVLCSafeTrackId(NSArray *indexes, NSUInteger i) {
         }
     }
 
+    // Velocidad: VLC la toma al vuelo, sin recargar el medio.
+    if (oldViewProps.rate != newViewProps.rate) {
+        _player.rate = newViewProps.rate > 0 ? newViewProps.rate : 1.0f;
+    }
+
     if (oldViewProps.muted != newViewProps.muted) {
         _player.audio.muted = newViewProps.muted;
     }
@@ -226,6 +231,9 @@ static int VideoVLCSafeTrackId(NSArray *indexes, NSUInteger i) {
 
     if (!props.paused) {
         [_player play];
+    }
+    if (props.rate > 0 && props.rate != 1.0f) {
+        _player.rate = props.rate;
     }
 }
 

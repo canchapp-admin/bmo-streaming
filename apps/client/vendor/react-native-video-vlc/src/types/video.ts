@@ -42,6 +42,8 @@ export interface ReactVideoVLCProps extends ReactVideoVLCEvents, ViewProps {
   selectedTextTrack?: number;
   selectedAudioTrack?: number;
   paused?: boolean;
+  /** Velocidad de reproducción (1 = normal, 0.5–2). */
+  rate?: number;
   muted?: boolean;
   volume?: number; // 0-100, default 100
   progressUpdateInterval?: number; // default 250

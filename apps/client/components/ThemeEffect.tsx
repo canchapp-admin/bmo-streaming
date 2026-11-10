@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Animated, Easing, StyleSheet, View, useWindowDimensions } from 'react-native'
 import { SymbolView } from 'expo-symbols'
 import * as Haptics from 'expo-haptics'
-import Svg, { Circle, Defs, Ellipse, LinearGradient as SvgLinearGradient, Path, RadialGradient, Rect, Stop } from 'react-native-svg'
+import Svg, { Circle, Defs, Ellipse, G, LinearGradient as SvgLinearGradient, Path, RadialGradient, Rect, Stop } from 'react-native-svg'
 import { useReduceMotion } from '@/lib/useReduceMotion'
 
 // Animación de bienvenida de cada especial y de cada plataforma/franquicia: al entrar a Navidad nieva un
@@ -23,7 +23,6 @@ type Shape =
   | { kind: 'petal'; colors: string[] } // óvalo que gira (pétalos, hojas)
   | { kind: 'confetti'; colors: string[] } // tira que gira y "da vueltas" en 3D
   | { kind: 'symbol'; name: string; colors: string[] }
-  | { kind: 'donut'; colors: string[] } // dona glaseada con chispitas (colors = glaseado)
 
 type Effect =
   | { type: 'fall' | 'rise'; count: number; shape: Shape; size: [number, number]; speed: [number, number]; sway: number }
@@ -43,16 +42,8 @@ type Effect =
 // Qué animación tiene cada especial. Los que no figuran no tienen.
 // Un especial puede combinar varias (Halloween: murciélagos + brasas).
 const EFFECTS: Record<string, Effect | Effect[]> = {
-  // Los Simpson: como la apertura, se abren las nubes del cielo celeste y
-  // empiezan a caer donas glaseadas con chispitas, girando.
-  simpsons: [
-    { type: 'clouds', count: 9 },
-    {
-      type: 'fall', count: 22,
-      shape: { kind: 'donut', colors: ['#FF7EB6', '#FF9BC8', '#7A4A2A', '#FFF4E0'] },
-      size: [20, 36], speed: [3600, 5600], sway: 26,
-    },
-  ],
+  // Los Simpson: como la apertura, se abren las nubes del cielo.
+  simpsons: { type: 'clouds', count: 9 },
   // Harry Potter: el Gran Comedor sin dibujar a nadie. Velas que flotan y
   // titilan sobre el castillo de noche, un cielo con estrellas y, al segundo,
   // un hechizo: una estela de chispas doradas que cruza en arco y estalla.
@@ -155,11 +146,6 @@ const EFFECTS: Record<string, Effect | Effect[]> = {
     { type: 'flash', color: '#BFD9FF' },
     { type: 'bats', count: 11, rim: 'rgba(150,190,255,0.5)', fill: '#070B14', delayMs: 700 },
   ],
-  pixar: {
-    type: 'rise', count: 22, // globos de colores
-    shape: { kind: 'symbol', name: 'circle.fill', colors: ['#FF5A5F', '#FFC93C', '#3FC1C9', '#8A6CFF', '#5FD068', '#FF8FB1'] },
-    size: [10, 20], speed: [4200, 6200], sway: 26,
-  },
   dreamworks: { type: 'twinkle', count: 36, color: '#FFF6D5' }, // el cielo estrellado de la luna
   illumination: {
     type: 'rise', count: 26, // burbujas amarillas
@@ -187,7 +173,7 @@ const TIMING: Record<string, { show: number; fade: number }> = {
   marvel: { show: 4400, fade: 1100 },
   dc: { show: 4800, fade: 1300 },
   harrypotter: { show: 5600, fade: 1600 },
-  simpsons: { show: 5000, fade: 1400 },
+  simpsons: { show: 2800, fade: 800 },
 }
 
 const rand = (min: number, max: number) => min + Math.random() * (max - min)
@@ -304,9 +290,7 @@ function Drift({ effect }: { effect: Extract<Effect, { type: 'fall' | 'rise' }> 
         ]
         return (
           <Animated.View key={i} style={[styles.particle, { left: p.x, opacity, transform }]}>
-            {effect.shape.kind === 'donut' ? (
-              <Donut size={p.size} frosting={p.color} id={`dn${i}`} />
-            ) : effect.shape.kind === 'symbol' ? (
+            {effect.shape.kind === 'symbol' ? (
               <SymbolView name={effect.shape.name as never} tintColor={p.color} style={{ width: p.size, height: p.size }} />
             ) : effect.shape.kind === 'confetti' ? (
               <View style={{ width: p.size * 0.45, height: p.size, borderRadius: 1.5, backgroundColor: p.color }} />
@@ -899,50 +883,6 @@ function Searchlight() {
   )
 }
 
-// ── Donas (Los Simpson) ──────────────────────────────────────────────────
-// Masa dorada, glaseado ondulado y chispitas de colores. El agujero es
-// transparente (evenodd), así se ve el fondo a través.
-const SPRINKLES = ['#FF4D4D', '#FFD90F', '#4FC3F7', '#7CDB6A', '#FFFFFF', '#B57BFF']
-const SPRINKLE_SPOTS = [
-  [12, 4.6, 20], [17.6, 7, 70], [19.4, 12.6, 130], [17, 17.8, 30], [11.6, 19.6, 100],
-  [6.4, 17.4, 160], [4.6, 11.4, 50], [6.8, 6, 120], [14.8, 4.8, 150], [19, 9.6, 10],
-]
-function Donut({ size, frosting, id }: { size: number; frosting: string; id: string }) {
-  // Un anillo: círculo de radio R menos el agujero de radio r.
-  const ring = (R: number, r: number) =>
-    `M ${12 - R} 12 a ${R} ${R} 0 1 0 ${R * 2} 0 a ${R} ${R} 0 1 0 ${-R * 2} 0 Z ` +
-    `M ${12 - r} 12 a ${r} ${r} 0 1 0 ${r * 2} 0 a ${r} ${r} 0 1 0 ${-r * 2} 0 Z`
-  // El glaseado con borde ondulado: 14 puntos a radio alternado unidos con
-  // curvas (cada tramo pasa por el punto medio), así gotea suave.
-  const pts = Array.from({ length: 14 }, (_, k) => {
-    const a = (k / 14) * Math.PI * 2
-    const r = k % 2 ? 9.3 : 10.4
-    return [12 + Math.cos(a) * r, 12 + Math.sin(a) * r]
-  })
-  const mid = (a: number[], b: number[]) => `${((a[0] + b[0]) / 2).toFixed(2)} ${((a[1] + b[1]) / 2).toFixed(2)}`
-  const wavy =
-    `M ${mid(pts[pts.length - 1], pts[0])} ` +
-    pts.map((pt, k) => `Q ${pt[0].toFixed(2)} ${pt[1].toFixed(2)} ${mid(pt, pts[(k + 1) % pts.length])}`).join(' ') +
-    ' Z M 8.4 12 a 3.6 3.6 0 1 0 7.2 0 a 3.6 3.6 0 1 0 -7.2 0 Z'
-  return (
-    <Svg width={size} height={size} viewBox="0 0 24 24">
-      <Defs>
-        <RadialGradient id={`${id}d`} cx="40%" cy="35%" r="70%">
-          <Stop offset="0" stopColor="#F2C27E" />
-          <Stop offset="1" stopColor="#C98A45" />
-        </RadialGradient>
-      </Defs>
-      <Path d={ring(11.5, 3.2)} fill={`url(#${id}d)`} fillRule="evenodd" />
-      <Path d={wavy} fill={frosting} fillRule="evenodd" strokeLinejoin="round" stroke={frosting} strokeWidth={0.8} />
-      {/* Brillo del glaseado */}
-      <Path d="M 6.2 9 A 6.4 6.4 0 0 1 11 5.6" stroke="rgba(255,255,255,0.7)" strokeWidth={1.3} strokeLinecap="round" fill="none" />
-      {SPRINKLE_SPOTS.map(([x, y, rot], k) => (
-        <Rect key={k} x={x - 1.1} y={y - 0.4} width={2.2} height={0.8} rx={0.4} fill={SPRINKLES[k % SPRINKLES.length]} transform={`rotate(${rot} ${x} ${y})`} />
-      ))}
-    </Svg>
-  )
-}
-
 // ── Nubes que se abren (Los Simpson) ─────────────────────────────────────
 // Al entrar, la parte de arriba está cubierta de nubes blancas y mullidas
 // que se separan hacia los costados y se desvanecen, como el cielo que se
@@ -1015,6 +955,457 @@ function CloudShape({ width, id }: { width: number; id: string }) {
         fill={`url(#${id}g)`}
       />
     </Svg>
+  )
+}
+
+// ── Lámpara de escritorio (Pixar) ────────────────────────────────────────
+// Una lámpara articulada de las de toda la vida (brazos con resortes, pantalla
+// cónica, base redonda) que entra saltando desde la derecha como si estuviera
+// viva: se agacha para tomar impulso, se estira en el aire, se aplasta al
+// caer y rebota. Prende la luz con un parpadeo y mira la pantalla con
+// curiosidad, ladeando la cabeza. Hápticos al caer y al prenderse.
+//
+// Geometría (en el cuadro de 170×180 del cuerpo, mirando a la izquierda):
+// base en (110,156), codo en (134,94), cuello en (78,50). La cabeza es otro
+// cuadro de 90×90 cuyo eje (60,30) cae justo en el cuello y gira sobre él.
+const LAMP_B: [number, number] = [110, 156]
+const LAMP_E: [number, number] = [134, 94]
+const LAMP_P: [number, number] = [78, 50]
+const LAMP_W = 170
+const LAMP_H = 180
+
+// Las dos varillas paralelas de un brazo.
+function lampRods(a: [number, number], b: [number, number], off = 3) {
+  const [ax, ay] = a
+  const [bx, by] = b
+  const len = Math.hypot(bx - ax, by - ay)
+  const nx = -(by - ay) / len
+  const ny = (bx - ax) / len
+  return [-off, off].map((o) => [ax + nx * o, ay + ny * o, bx + nx * o, by + ny * o])
+}
+// El resorte en zigzag al costado del brazo, en su tramo del medio.
+function lampSpring(a: [number, number], b: [number, number], off: number, n = 9, amp = 3.2) {
+  const [ax, ay] = a
+  const dx = b[0] - ax
+  const dy = b[1] - ay
+  const len = Math.hypot(dx, dy)
+  const nx = -dy / len
+  const ny = dx / len
+  const pts = Array.from({ length: n + 1 }, (_, k) => {
+    const t = 0.25 + (0.5 * k) / n
+    const s = k > 0 && k < n ? (k % 2 ? amp : -amp) : 0
+    return `${(ax + dx * t + nx * (off + s)).toFixed(1)} ${(ay + dy * t + ny * (off + s)).toFixed(1)}`
+  })
+  return 'M ' + pts.join(' L ')
+}
+
+function LampBody() {
+  const arms: [[number, number], [number, number], number][] = [[LAMP_B, LAMP_E, 9], [LAMP_E, LAMP_P, -9]]
+  return (
+    <Svg width={LAMP_W} height={LAMP_H} viewBox={`0 0 ${LAMP_W} ${LAMP_H}`}>
+      <Defs>
+        <SvgLinearGradient id="lampBase" x1="0" y1="0" x2="0" y2="1">
+          <Stop offset="0" stopColor="#F4F4F6" />
+          <Stop offset="1" stopColor="#B9BBC3" />
+        </SvgLinearGradient>
+      </Defs>
+      <Path d="M 80 174 C 80 160 92 154 110 154 C 128 154 140 160 140 174 Z" fill="url(#lampBase)" />
+      <Rect x={76} y={171} width={68} height={6} rx={3} fill="#B8B8C0" />
+      {arms.map(([a, b, off], i) => (
+        <G key={i}>
+          {lampRods(a, b).map(([x1, y1, x2, y2], k) => (
+            <Path key={k} d={`M ${x1} ${y1} L ${x2} ${y2}`} stroke="#D9D9DE" strokeWidth={3.4} strokeLinecap="round" />
+          ))}
+          <Path d={lampSpring(a, b, off)} stroke="#9EA0A8" strokeWidth={1.6} fill="none" strokeLinejoin="round" />
+        </G>
+      ))}
+      {[LAMP_B, LAMP_E].map(([x, y], i) => (
+        <G key={i}>
+          <Circle cx={x} cy={y} r={6} fill="#A4A6AE" />
+          <Circle cx={x} cy={y} r={2.4} fill="#6E7078" />
+        </G>
+      ))}
+    </Svg>
+  )
+}
+
+// La pantalla. `light` (0–1) prende la lamparita y el haz.
+//
+// Lo que hace que la luz se vea real:
+//  · El haz son seis conos superpuestos, cada uno un poco más abierto y más
+//    tenue: el borde se difumina de verdad, sin escalones.
+//  · Se apaga con la distancia (fuerte en la boca, nada al final) y tiene un
+//    resplandor caliente en la boca.
+//  · Polvo flotando dentro del haz: motitas que brillan solo donde hay luz.
+//  · La lamparita "calienta": primero naranja, después blanca.
+//  · La luz ilumina la propia lámpara: el borde de la boca se enciende.
+const BEAM_L = 380
+const BEAM_C = 170 // centro vertical del cuadro del haz (ahí está la boca)
+const BEAM_LAYERS = Array.from({ length: 6 }, (_, k) => {
+  const t = k / 5
+  return {
+    mouth: 11 + t * 17, // semiancho en la boca
+    end: BEAM_L * Math.tan(((7 + t * 20) * Math.PI) / 180), // semiancho al final
+    o: 0.075 - t * 0.03,
+  }
+})
+// Motitas de polvo dentro del cono interior.
+const MOTES = Array.from({ length: 16 }, (_, k) => {
+  const x = 50 + ((k * 137) % 250)
+  const spread = x * Math.tan((9 * Math.PI) / 180)
+  return {
+    x,
+    y: BEAM_C + (((k * 53) % 100) / 50 - 1) * spread,
+    r: 0.8 + ((k * 31) % 10) / 10,
+    ms: 2600 + ((k * 71) % 2000),
+    dx: ((k % 3) - 1) * 10,
+    dy: (((k * 7) % 3) - 1) * 8,
+  }
+})
+
+function LampHead({ light }: { light: Animated.Value }) {
+  // Posición al azar dentro del cono (con la fórmula fija quedaban en fila).
+  const motes = useMemo(
+    () =>
+      MOTES.map((m) => {
+        const x = rand(40, 300)
+        const spread = x * Math.tan((9 * Math.PI) / 180)
+        return { ...m, x, y: BEAM_C + rand(-spread, spread), v: new Animated.Value(Math.random()) }
+      }),
+    []
+  )
+  useEffect(() => {
+    const anims = motes.map((m) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(m.v, { toValue: 1, duration: m.ms, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+          Animated.timing(m.v, { toValue: 0, duration: m.ms, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+        ])
+      )
+    )
+    anims.forEach((a) => a.start())
+    return () => anims.forEach((a) => a.stop())
+  }, [motes])
+
+  // Boca de la pantalla en (33,57), mirando abajo a la izquierda (135°).
+  return (
+    <View style={{ width: 90, height: 90 }}>
+      <Animated.View
+        style={{
+          position: 'absolute', left: 33, top: 57 - BEAM_C, width: BEAM_L, height: BEAM_C * 2,
+          transformOrigin: [0, BEAM_C, 0],
+          transform: [{ rotate: '135deg' }],
+          opacity: light,
+        }}
+      >
+        <Svg width={BEAM_L} height={BEAM_C * 2}>
+          <Defs>
+            {BEAM_LAYERS.map((l, k) => (
+              <SvgLinearGradient key={k} id={`lampBeam${k}`} x1="0" y1="0" x2="1" y2="0">
+                <Stop offset="0" stopColor="#FFE6B0" stopOpacity={l.o} />
+                <Stop offset="0.25" stopColor="#FFE6B0" stopOpacity={l.o * 0.7} />
+                <Stop offset="0.6" stopColor="#FFE9BE" stopOpacity={l.o * 0.25} />
+                <Stop offset="1" stopColor="#FFE9BE" stopOpacity={0} />
+              </SvgLinearGradient>
+            ))}
+            <RadialGradient id="lampHot" cx="0" cy={BEAM_C} r="140" gradientUnits="userSpaceOnUse">
+              <Stop offset="0" stopColor="#FFF4D6" stopOpacity={0.42} />
+              <Stop offset="0.35" stopColor="#FFE3A8" stopOpacity={0.12} />
+              <Stop offset="1" stopColor="#FFE3A8" stopOpacity={0} />
+            </RadialGradient>
+          </Defs>
+          {BEAM_LAYERS.map((l, k) => (
+            <Path
+              key={k}
+              d={`M 0 ${BEAM_C - l.mouth} L ${BEAM_L} ${BEAM_C - l.end} L ${BEAM_L} ${BEAM_C + l.end} L 0 ${BEAM_C + l.mouth} Z`}
+              fill={`url(#lampBeam${k})`}
+            />
+          ))}
+          <Path d={`M 0 ${BEAM_C - 30} L ${BEAM_L} 0 L ${BEAM_L} ${BEAM_C * 2} L 0 ${BEAM_C + 30} Z`} fill="url(#lampHot)" />
+        </Svg>
+        {/* Polvo en el aire: más visible cerca de la boca, donde hay más luz */}
+        {motes.map((m, k) => (
+          <Animated.View
+            key={k}
+            style={{
+              position: 'absolute', left: m.x, top: m.y,
+              width: m.r * 2, height: m.r * 2, borderRadius: m.r, backgroundColor: '#FFF3D6',
+              opacity: m.v.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0.15, 0.75, 0.15] }).interpolate({
+                inputRange: [0, 1], outputRange: [0, 1 - m.x / BEAM_L],
+              }),
+              transform: [
+                { translateX: m.v.interpolate({ inputRange: [0, 1], outputRange: [0, m.dx] }) },
+                { translateY: m.v.interpolate({ inputRange: [0, 1], outputRange: [0, m.dy] }) },
+              ],
+            }}
+          />
+        ))}
+      </Animated.View>
+      {/* Halo alrededor de la lamparita */}
+      <Animated.View style={{ position: 'absolute', left: 35 - 42, top: 55 - 42, opacity: light }}>
+        <SoftFlake size={84} id="lampHalo" color="#FFE2A6" />
+      </Animated.View>
+      <Svg width={90} height={90} style={StyleSheet.absoluteFill}>
+        <Defs>
+          {/* Metal: luz arriba, una franja de brillo y sombra abajo */}
+          <SvgLinearGradient id="lampShade" x1="0.2" y1="0" x2="0.8" y2="1">
+            <Stop offset="0" stopColor="#FFFFFF" />
+            <Stop offset="0.35" stopColor="#E6E7EC" />
+            <Stop offset="0.7" stopColor="#BFC1C9" />
+            <Stop offset="1" stopColor="#8E909A" />
+          </SvgLinearGradient>
+          <RadialGradient id="lampCap" cx="35%" cy="30%" r="70%">
+            <Stop offset="0" stopColor="#FFFFFF" />
+            <Stop offset="1" stopColor="#A9ABB4" />
+          </RadialGradient>
+        </Defs>
+        <Path d="M 53 23 L 14.8 38.8 A 26 8 45 0 0 51.2 75.2 L 67 37 A 10 10 0 0 0 53 23 Z" fill="url(#lampShade)" />
+        {/* Brillo especular a lo largo de la pantalla */}
+        <Path d="M 52 27 L 22 39.5" stroke="rgba(255,255,255,0.85)" strokeWidth={2} strokeLinecap="round" />
+        {/* Boca apagada: el interior en sombra */}
+        <Ellipse cx={33} cy={57} rx={26} ry={8} transform="rotate(45 33 57)" fill="#4A4C54" />
+      </Svg>
+      {/* Boca encendida: la lamparita calienta (naranja → blanca) y el
+          interior de la pantalla se ilumina, con el borde encendido. */}
+      <Animated.View style={[StyleSheet.absoluteFill, { opacity: light }]}>
+        <Svg width={90} height={90}>
+          <Ellipse cx={33} cy={57} rx={26} ry={8} transform="rotate(45 33 57)" fill="#FFE7B4" />
+          <Ellipse cx={33} cy={57} rx={25.4} ry={7.6} transform="rotate(45 33 57)" fill="none" stroke="#FFF7E2" strokeWidth={1.2} />
+          <Circle cx={35} cy={55} r={9.5} fill="#FFB75E" />
+        </Svg>
+      </Animated.View>
+      <Animated.View
+        style={[StyleSheet.absoluteFill, { opacity: light.interpolate({ inputRange: [0, 0.6, 1], outputRange: [0, 0.2, 1] }) }]}
+      >
+        <Svg width={90} height={90}>
+          <Circle cx={35} cy={55} r={9.5} fill="#FFFDF5" />
+          <Circle cx={35} cy={55} r={5} fill="#FFFFFF" />
+        </Svg>
+      </Animated.View>
+      <Svg width={90} height={90} style={StyleSheet.absoluteFill}>
+        <Circle cx={62} cy={28} r={12} fill="url(#lampCap)" />
+        <Path d="M 55 21 A 9 9 0 0 1 64 18" stroke="rgba(255,255,255,0.9)" strokeWidth={1.6} strokeLinecap="round" fill="none" />
+        <Circle cx={62} cy={28} r={4} fill="#A4A6AE" />
+        <Circle cx={62} cy={28} r={1.6} fill="#6E7078" />
+        <Circle cx={71} cy={18} r={3} fill="#BFC1C8" />
+      </Svg>
+    </View>
+  )
+}
+
+export const PIXAR_LAMP_SIZE = { width: LAMP_W, height: LAMP_H }
+
+// Hacia dónde tiene que girar la cabeza (en grados) para que el haz apunte a
+// un punto: el haz pasa justo por el cuello (la boca está sobre su eje), así
+// que alcanza con el ángulo desde el cuello. `tx`/`ty` en coordenadas del
+// cuadro de la lámpara.
+export function pixarLampAim(tx: number, ty: number) {
+  return (Math.atan2(ty - LAMP_P[1], tx - LAMP_P[0]) * 180) / Math.PI - 135
+}
+
+// Dónde cruza el eje del haz la altura `ty` (en x, coordenadas del cuadro de
+// la lámpara) para varios giros de cabeza: para que lo iluminado siga al haz.
+export function pixarLampHits(ty: number, angles: number[]) {
+  return angles.map((deg) => {
+    const phi = ((135 + deg) * Math.PI) / 180
+    const dy = ty - LAMP_P[1]
+    return LAMP_P[0] + (dy * Math.cos(phi)) / Math.max(0.1, Math.sin(phi))
+  })
+}
+
+// La lámpara de Pixar, parada sobre un piso. La ubica la pantalla (el estudio
+// la pone sobre el título destacado): `style` posiciona su cuadro, cuyo borde
+// de abajo es el piso; `screenLeft` es dónde queda ese cuadro en la pantalla
+// (para que el piso cruce de lado a lado). `light` y `head` los crea la
+// pantalla para que otras cosas reaccionen a la luz (el título se ilumina).
+// `aim`: hacia dónde termina mirando.
+export function PixarLamp({
+  light, head, aim, screenLeft, style,
+}: {
+  light: Animated.Value
+  head: Animated.Value
+  aim: number
+  screenLeft: number
+  style?: object
+}) {
+  const { width } = useWindowDimensions()
+  const reduceMotion = useReduceMotion()
+  const x = useRef(new Animated.Value(width * 0.6)).current // empieza fuera, a la derecha
+  const y = useRef(new Animated.Value(0)).current
+  const squash = useRef(new Animated.Value(0)).current // -1 estirada · 0 normal · 1 aplastada
+  const left = screenLeft
+  const floorY = LAMP_H - 3 // el piso, en coordenadas de la lámpara
+  const floorIn = useRef(new Animated.Value(0)).current
+
+  // Dónde pega el haz en el piso según hacia dónde mira la cabeza: la boca
+  // está a (-27, 27) del cuello y gira con él; el haz sale a 135° + giro.
+  // Se calcula para varios ángulos y se interpola entre ellos.
+  const pool = useMemo(() => {
+    const angles = [-25, -10, 0, 10, 20, 30, 38, 46]
+    const hit = angles.map((deg) => {
+      const r = (deg * Math.PI) / 180
+      const mx = LAMP_P[0] + -27 * Math.cos(r) - 27 * Math.sin(r)
+      const my = LAMP_P[1] + -27 * Math.sin(r) + 27 * Math.cos(r)
+      const phi = ((135 + deg) * Math.PI) / 180
+      const dist = (floorY - my) / Math.max(0.12, Math.sin(phi)) // largo del rayo hasta el piso
+      return { x: mx + Math.cos(phi) * dist, dist }
+    })
+    return {
+      angles,
+      x: hit.map((h) => h.x),
+      // Más lejos: el charco se estira y se apaga.
+      scale: hit.map((h) => Math.min(2.4, 0.7 + h.dist / 220)),
+      fade: hit.map((h) => Math.max(0.15, Math.min(1, 1.25 - h.dist / 420))),
+    }
+  }, [floorY])
+
+  useEffect(() => {
+    // Sin animaciones: la lámpara ya está en su lugar, prendida y mirando.
+    if (reduceMotion) {
+      x.setValue(0); light.setValue(1); head.setValue(aim); floorIn.setValue(1)
+      return
+    }
+    head.setValue(-12)
+    light.setValue(0)
+    const t = (v: Animated.Value, toValue: number, duration: number, easing = Easing.inOut(Easing.quad)) =>
+      Animated.timing(v, { toValue, duration, easing, useNativeDriver: true })
+    // Agacharse → saltar estirada (la caída). Después, aplastarse y rebotar.
+    const jump = (toX: number, ms: number, h: number) =>
+      Animated.sequence([
+        t(squash, 0.8, 130, Easing.out(Easing.quad)),
+        Animated.parallel([
+          t(x, toX, ms, Easing.inOut(Easing.sin)),
+          Animated.sequence([t(y, -h, ms / 2, Easing.out(Easing.quad)), t(y, 0, ms / 2, Easing.in(Easing.quad))]),
+          Animated.sequence([t(squash, -1, ms * 0.3, Easing.out(Easing.quad)), t(squash, 0, ms * 0.7)]),
+          // La cabeza acompaña: mira arriba al subir y al piso al caer.
+          Animated.sequence([t(head, -22, ms / 2), t(head, -6, ms / 2)]),
+        ]),
+      ])
+    const land = () =>
+      Animated.sequence([
+        t(squash, 1, 70, Easing.out(Easing.quad)),
+        Animated.spring(squash, { toValue: 0, speed: 20, bounciness: 12, useNativeDriver: true }),
+      ])
+    const tap = (style: Haptics.ImpactFeedbackStyle) => () => Haptics.impactAsync(style).catch(() => {})
+    // Pasos en orden; el háptico va justo cuando arranca su paso (al tocar el
+    // piso, al prender la luz), así coincide aunque el rebote dure lo que dure.
+    const steps: [Animated.CompositeAnimation, (() => void)?][] = [
+      [Animated.delay(250)],
+      [jump(width * 0.28, 480, 70)],
+      [land(), tap(Haptics.ImpactFeedbackStyle.Light)],
+      [jump(0, 440, 55)],
+      [land(), tap(Haptics.ImpactFeedbackStyle.Medium)],
+      [Animated.delay(120)],
+      // Prende con un parpadeo, como una lamparita de verdad.
+      [Animated.sequence([t(light, 1, 60), t(light, 0.15, 70), t(light, 1, 80), t(light, 0.5, 50), t(light, 1, 140)]), tap(Haptics.ImpactFeedbackStyle.Soft)],
+      [Animated.delay(200)],
+      // Busca el título: se pasa un poco, ladea la cabeza con curiosidad y se
+      // queda iluminándolo. Al rato te mira a vos, y vuelve al título.
+      [Animated.sequence([
+        t(head, aim + 14, 520, Easing.out(Easing.back(1.4))),
+        Animated.delay(220),
+        t(head, aim - 8, 260), t(head, aim + 6, 240), t(head, aim, 300),
+        Animated.delay(1400),
+        t(head, aim + 30, 520, Easing.out(Easing.back(1.6))),
+        Animated.delay(500),
+        t(head, aim, 600, Easing.inOut(Easing.cubic)),
+      ])],
+    ]
+    let current: Animated.CompositeAnimation | null = null
+    const run = (i: number) => {
+      if (i >= steps.length) return
+      const [anim, onStart] = steps[i]
+      onStart?.()
+      current = anim
+      anim.start(({ finished }) => finished && run(i + 1))
+    }
+    Animated.timing(floorIn, { toValue: 1, duration: 500, easing: Easing.out(Easing.quad), useNativeDriver: true }).start()
+    run(0)
+    return () => current?.stop()
+  }, [width, aim, reduceMotion])
+
+  return (
+    <View pointerEvents="none" style={[{ position: 'absolute', width: LAMP_W, height: LAMP_H }, style]}>
+      {/* El piso: una superficie que va de lado a lado, con un filo de luz
+          arriba y que se pierde hacia abajo. */}
+      <Animated.View
+        style={{ position: 'absolute', left: -left, top: floorY, width, height: 56, opacity: floorIn }}
+      >
+        <Svg width={width} height={56}>
+          <Defs>
+            <SvgLinearGradient id="lampFloor" x1="0" y1="0" x2="0" y2="1">
+              <Stop offset="0" stopColor="#FFFFFF" stopOpacity={0.07} />
+              <Stop offset="1" stopColor="#FFFFFF" stopOpacity={0} />
+            </SvgLinearGradient>
+            <SvgLinearGradient id="lampEdge" x1="0" y1="0" x2="1" y2="0">
+              <Stop offset="0" stopColor="#FFFFFF" stopOpacity={0} />
+              <Stop offset="0.5" stopColor="#FFFFFF" stopOpacity={0.28} />
+              <Stop offset="1" stopColor="#FFFFFF" stopOpacity={0.12} />
+            </SvgLinearGradient>
+          </Defs>
+          <Rect x={0} y={0} width={width} height={56} fill="url(#lampFloor)" />
+          <Rect x={0} y={0} width={width} height={1} fill="url(#lampEdge)" />
+        </Svg>
+      </Animated.View>
+      {/* Charco de luz donde el haz toca el piso: sigue a la cabeza */}
+      <Animated.View
+        style={{
+          position: 'absolute', left: -110, top: floorY - 22, width: 220, height: 44,
+          opacity: Animated.multiply(light, head.interpolate({ inputRange: pool.angles, outputRange: pool.fade, extrapolate: 'clamp' })),
+          transform: [
+            { translateX: Animated.add(x, head.interpolate({ inputRange: pool.angles, outputRange: pool.x, extrapolate: 'clamp' })) },
+            { scaleX: head.interpolate({ inputRange: pool.angles, outputRange: pool.scale, extrapolate: 'clamp' }) },
+          ],
+        }}
+      >
+        <Svg width={220} height={44}>
+          <Defs>
+            <RadialGradient id="lampPool" cx="50%" cy="50%" r="50%">
+              <Stop offset="0" stopColor="#FFEBC0" stopOpacity={0.5} />
+              <Stop offset="0.5" stopColor="#FFE2A6" stopOpacity={0.18} />
+              <Stop offset="1" stopColor="#FFE2A6" stopOpacity={0} />
+            </RadialGradient>
+          </Defs>
+          <Ellipse cx={110} cy={22} rx={110} ry={22} fill="url(#lampPool)" />
+        </Svg>
+      </Animated.View>
+      {/* Sombra en el piso: se achica y aclara cuando la lámpara está en el aire */}
+      <Animated.View
+        style={{
+          position: 'absolute', left: 70, top: LAMP_H - 7, width: 80, height: 10, borderRadius: 40,
+          backgroundColor: 'rgba(0,0,0,0.3)',
+          opacity: y.interpolate({ inputRange: [-70, 0], outputRange: [0.35, 1] }),
+          transform: [
+            { translateX: x },
+            { scaleX: y.interpolate({ inputRange: [-70, 0], outputRange: [0.55, 1] }) },
+          ],
+        }}
+      />
+      <Animated.View
+        style={{
+          width: LAMP_W, height: LAMP_H,
+          // El aplastón nace en la base, no en el centro.
+          transformOrigin: [LAMP_B[0], LAMP_H, 0],
+          transform: [
+            { translateX: x },
+            { translateY: y },
+            { scaleY: squash.interpolate({ inputRange: [-1, 0, 1], outputRange: [1.1, 1, 0.8] }) },
+            { scaleX: squash.interpolate({ inputRange: [-1, 0, 1], outputRange: [0.94, 1, 1.12] }) },
+          ],
+        }}
+      >
+        <LampBody />
+        <Animated.View
+          style={{
+            position: 'absolute', left: LAMP_P[0] - 60, top: LAMP_P[1] - 30,
+            transformOrigin: [60, 30, 0],
+            transform: [{ rotate: head.interpolate({ inputRange: [-90, 90], outputRange: ['-90deg', '90deg'] }) }],
+          }}
+        >
+          <LampHead light={light} />
+        </Animated.View>
+      </Animated.View>
+    </View>
   )
 }
 

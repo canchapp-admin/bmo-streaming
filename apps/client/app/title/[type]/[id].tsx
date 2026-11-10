@@ -38,6 +38,10 @@ import { Touchable } from '@/components/Touchable'
 import { EmptyState } from '@/components/EmptyState'
 import { TitleSkeleton } from '@/components/Skeleton'
 import { InlineTrailer } from '@/components/InlineTrailer'
+import { TiltLayer, TiltGlare } from '@/components/TiltLayer'
+import { useTilt } from '@/lib/useTilt'
+import { useDominantColor } from '@/lib/dominantColor'
+import { mix, withAlpha } from '@/lib/color'
 import { colors } from '@/lib/theme'
 
 const { width } = Dimensions.get('window')
@@ -151,7 +155,17 @@ export default function TitleScreen() {
   // El tráiler ocupa el hueco del backdrop en el propio hero. Se apaga al
   // cambiar de título para no dejar sonando el video del anterior.
   const [trailerOpen, setTrailerOpen] = useState(false)
+  // Relieve del hero con la inclinación del teléfono (apagado con el tráiler).
+  const tilt = useTilt(!trailerOpen)
   useEffect(() => { setTrailerOpen(false) }, [id, type])
+
+  // Color de la ficha, sacado del póster (como Apple Music con las portadas).
+  // Mismo empalme que las pantallas de estudio: el hero termina en `tint`
+  // OPACO y el fondo arranca en ese mismo color y se apaga a negro, así no
+  // hay costura. Mientras se calcula, la ficha queda en negro y el color
+  // entra con un fundido.
+  const dominant = useDominantColor(data?.poster_path)
+  const tint = dominant ? mix(dominant, 0.22) : null
 
   const scrollRef = useAnimatedRef<Animated.ScrollView>()
   function openTrailer() {
@@ -306,14 +320,18 @@ export default function TitleScreen() {
               pasarse al cuerpo de la ficha con el parallax. */}
           <View style={styles.heroClip} pointerEvents="none">
             <Animated.View style={[styles.heroLayer, heroStyle]}>
-              {backdropUrl(data.backdrop_path, 'w1280') && (
-                <Image
-                  source={backdropUrl(data.backdrop_path, 'w1280')}
-                  style={styles.heroBg}
-                  contentFit="cover"
-                  transition={250}
-                />
-              )}
+              {/* Relieve: la foto se corre con la inclinación del teléfono */}
+              <TiltLayer tilt={tilt} depth={16} overscan={0.08} style={StyleSheet.absoluteFill}>
+                {backdropUrl(data.backdrop_path, 'w1280') && (
+                  <Image
+                    source={backdropUrl(data.backdrop_path, 'w1280')}
+                    style={styles.heroBg}
+                    contentFit="cover"
+                    transition={250}
+                  />
+                )}
+              </TiltLayer>
+              <TiltGlare tilt={tilt} />
             </Animated.View>
           </View>
 
@@ -334,7 +352,17 @@ export default function TitleScreen() {
                 style={styles.heroGradient}
                 pointerEvents="none"
               />
+              {tint && (
+                <Animated.View key={tint} entering={FadeIn.duration(500)} style={styles.heroGradient} pointerEvents="none">
+                  <LinearGradient
+                    colors={[withAlpha(tint, 0), withAlpha(tint, 0.55), withAlpha(tint, 0.9), tint]}
+                    locations={[0.2, 0.62, 0.86, 1]}
+                    style={StyleSheet.absoluteFill}
+                  />
+                </Animated.View>
+              )}
               <Animated.View style={[styles.heroContent, heroContentStyle]} pointerEvents="none">
+                <TiltLayer tilt={tilt} depth={-6} style={styles.heroContentTilt}>
                 {/* Logo en blanco con sombra suave, como la app Apple TV: los
                     logos vienen en el color de la marca (azul, rojo…) y sobre
                     un backdrop del mismo tono no se leían. En blanco se leen
@@ -370,12 +398,22 @@ export default function TitleScreen() {
                     {data.genres.slice(0, 3).map((g) => g.name).join('  ·  ')}
                   </Text>
                 ) : null}
+                </TiltLayer>
               </Animated.View>
             </>
           )}
         </Animated.View>
 
         <View style={styles.body}>
+          {tint && dominant && (
+            <Animated.View key={tint} entering={FadeIn.duration(500)} style={styles.ambient} pointerEvents="none">
+              <LinearGradient
+                colors={[tint, mix(dominant, 0.1), '#000']}
+                locations={[0, 0.45, 1]}
+                style={StyleSheet.absoluteFill}
+              />
+            </Animated.View>
+          )}
           {!isTv &&
             (!isReleased(data.release_date) ? (
               <View style={styles.soonButton}>
@@ -542,6 +580,9 @@ const styles = StyleSheet.create({
   heroClip: { position: 'absolute', left: 0, right: 0, top: -HERO_OVERSCROLL, bottom: 0, overflow: 'hidden' },
   heroBg: { ...StyleSheet.absoluteFillObject },
   heroGradient: { ...StyleSheet.absoluteFillObject },
+  // Fondo teñido detrás del cuerpo: sale del borde del hero y se apaga a negro.
+  ambient: { position: 'absolute', top: 0, left: -20, right: -20, height: 900 },
+  heroContentTilt: { alignItems: 'center', alignSelf: 'stretch' },
   heroContent: {
     position: 'absolute',
     bottom: 10,

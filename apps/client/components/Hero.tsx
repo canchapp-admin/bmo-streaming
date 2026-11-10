@@ -20,6 +20,8 @@ import { prewarmTitle } from '@/lib/stream'
 import { Touchable } from './Touchable'
 import { Glass } from './Glass'
 import { HeroTrailer } from './HeroTrailer'
+import { TiltLayer, TiltGlare } from './TiltLayer'
+import type { Tilt } from '@/lib/useTilt'
 import { colors } from '@/lib/theme'
 
 const { width, height } = Dimensions.get('window')
@@ -45,6 +47,7 @@ export function Hero({
   reduceMotion = false,
   onTrailerPlaying,
   onTrailerEnded,
+  tilt,
 }: {
   item: MediaItem
   active: boolean
@@ -55,6 +58,8 @@ export function Hero({
   reduceMotion?: boolean
   onTrailerPlaying?: (playing: boolean) => void
   onTrailerEnded?: () => void
+  // Inclinación del teléfono (relieve). Solo la recibe el slide activo.
+  tilt?: Tilt
 }) {
   const router = useRouter()
   const isTv = item.media_type === 'tv' || (!!item.name && !item.title)
@@ -184,7 +189,11 @@ export function Hero({
 
   return (
     <View style={styles.hero}>
+      {/* Relieve: el fondo se corre con la inclinación (agrandado para que
+          no se vean los bordes) y el logo y los botones al revés, un poco
+          menos. Encima, un reflejo de luz que cruza al inclinar. */}
       {bg && (
+        <TiltLayer tilt={tilt} depth={14} overscan={0.08} style={StyleSheet.absoluteFill}>
         <Animated.View style={[StyleSheet.absoluteFill, bgTransform, { opacity: bgOpacity }]}>
           <Image source={bg} style={styles.bg} contentFit="cover" transition={300} />
           {trailer && (
@@ -203,9 +212,11 @@ export function Hero({
             style={styles.gradient}
           />
         </Animated.View>
+        </TiltLayer>
       )}
+      {!trailer && <TiltGlare tilt={tilt} />}
 
-      <View style={styles.content}>
+      <TiltLayer tilt={tilt} depth={-7} style={styles.content} pointerEvents="box-none">
         {/* Etiqueta tipográfica, como en la app Apple TV: sin caja ni borde.
             Es contenido, no un control, así que no lleva vidrio. */}
         <Text style={styles.trendingText}>Tendencia</Text>
@@ -260,7 +271,7 @@ export function Hero({
             </Glass>
           </Touchable>
         </View>
-      </View>
+      </TiltLayer>
 
       {/* Toque en el arte → detalle */}
       <Touchable

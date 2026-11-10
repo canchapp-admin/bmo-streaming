@@ -58,6 +58,7 @@ const VideoVLC = forwardRef<VideoVLCRef, ReactVideoVLCProps>(
       repeat,
       resizeMode,
       paused,
+      rate,
       volume,
       progressUpdateInterval,
       textTrackDelay,
@@ -159,6 +160,7 @@ const VideoVLC = forwardRef<VideoVLCRef, ReactVideoVLCProps>(
           muted={muted}
           resizeMode={resizeMode}
           paused={paused}
+          rate={rate}
           repeat={repeat}
           volume={volume}
           progressUpdateInterval={progressUpdateInterval}

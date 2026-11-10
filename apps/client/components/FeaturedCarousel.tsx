@@ -12,6 +12,7 @@ import { LinearGradient } from 'expo-linear-gradient'
 import { useRouter } from 'expo-router'
 import { type MediaItem, backdropUrl, titleOf, genreNames } from '@/lib/tmdb'
 import { prewarmTitle } from '@/lib/stream'
+import { TitleMenu, menuItemFrom } from './TitleMenu'
 import { Touchable } from './Touchable'
 import { colors } from '@/lib/theme'
 
@@ -28,12 +29,13 @@ function CarouselCard({ item }: { item: MediaItem }) {
   const type = isTv ? 'Serie' : 'Película'
 
   return (
+    // Mantener apretado: vista previa + menú nativo. Tocar: zoom a la ficha.
+    <TitleMenu item={menuItemFrom(item)}>
     <Touchable
       scaleTo={0.98}
       haptic="light"
       style={styles.card}
       onPressIn={() => prewarmTitle(item.id, isTv)}
-      onPress={() => router.push(`/title/${isTv ? 'tv' : 'movie'}/${item.id}` as never)}
     >
       {/* Imagen backdrop */}
       <View style={styles.imgWrap}>
@@ -60,6 +62,7 @@ function CarouselCard({ item }: { item: MediaItem }) {
         )}
       </View>
     </Touchable>
+    </TitleMenu>
   )
 }
 

@@ -14,6 +14,7 @@ import { Hero, HERO_H } from './Hero'
 import { type MediaItem, backdropUrl } from '@/lib/tmdb'
 import { colors } from '@/lib/theme'
 import { useReduceMotion } from '@/lib/useReduceMotion'
+import { useTilt } from '@/lib/useTilt'
 
 const { width } = Dimensions.get('window')
 // 9s y no 7: alcanza para leer el título y los géneros con calma. Igual, si el
@@ -78,6 +79,9 @@ export function HeroCarousel({
   live?: boolean
 }) {
   const reduceMotion = useReduceMotion()
+  // Un solo sensor para todo el carrusel (no uno por slide). Solo corre con
+  // el carrusel a la vista.
+  const tilt = useTilt(live)
   // Dedo apoyado en el hero (leyendo, por swipear, tocando un botón).
   const [touching, setTouching] = useState(false)
   // Tráiler sonando: el carrusel espera a que termine en vez de cortarlo.
@@ -200,6 +204,7 @@ export function HeroCarousel({
               <Hero
                 item={item}
                 active={index === activeIdx}
+                tilt={index === activeIdx ? tilt : undefined}
                 scrollY={scrollY}
                 live={live && !touching}
                 reduceMotion={reduceMotion}

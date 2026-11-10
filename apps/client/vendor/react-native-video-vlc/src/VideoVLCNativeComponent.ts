@@ -73,6 +73,7 @@ export interface NativeProps extends ViewProps {
   selectedTextTrack?: Int32;
   selectedAudioTrack?: Int32;
   paused?: boolean;
+  rate?: Float; // velocidad de reproducción (1 = normal)
   muted?: boolean;
   volume?: Int32; // default 100
   progressUpdateInterval?: Float; // default 250

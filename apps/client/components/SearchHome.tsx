@@ -4,6 +4,7 @@ import { LinearGradient } from 'expo-linear-gradient'
 import { SymbolView } from 'expo-symbols'
 import { useRouter } from 'expo-router'
 import { backdropUrl, titleOf, type Category, type MediaItem } from '@/lib/tmdb'
+import { TitleMenu, menuItemFrom } from './TitleMenu'
 import { Touchable } from './Touchable'
 import { RowHeading } from './RowHeading'
 import { PlatformRow, FranchiseRow } from './PlatformRow'
@@ -87,11 +88,10 @@ export function SearchHome({
               const img = backdropUrl(item.backdrop_path, 'w300')
               const year = (item.release_date ?? item.first_air_date ?? '').slice(0, 4)
               return (
+                <TitleMenu key={`${type}-${item.id}`} item={menuItemFrom({ ...item, media_type: type })}>
                 <Touchable
-                  key={`${type}-${item.id}`}
                   scaleTo={0.98}
                   haptic="light"
-                  onPress={() => router.push(`/title/${type}/${item.id}` as never)}
                   style={styles.topRow}
                   accessibilityRole="button"
                   accessibilityLabel={`${i + 1}. ${titleOf(item)}`}
@@ -109,6 +109,7 @@ export function SearchHome({
                     </Text>
                   </View>
                 </Touchable>
+                </TitleMenu>
               )
             })}
           </View>

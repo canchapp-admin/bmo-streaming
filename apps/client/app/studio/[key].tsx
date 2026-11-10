@@ -1,5 +1,5 @@
 import { BackButton } from '@/components/BackButton'
-import { ThemeEffect } from '@/components/ThemeEffect'
+import { PixarLamp, PIXAR_LAMP_SIZE, ThemeEffect, pixarLampAim, pixarLampHits } from '@/components/ThemeEffect'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { useRef } from 'react'
 import { Animated, View, Text, StyleSheet, Dimensions } from 'react-native'
@@ -25,6 +25,26 @@ import { colors } from '@/lib/theme'
 import { mix, withAlpha } from '@/lib/color'
 
 const { width } = Dimensions.get('window')
+
+// Pixar: la lámpara se para sobre un piso justo debajo del título destacado,
+// a la derecha, y lo ilumina. Su cuadro termina 6pt antes del borde.
+const LAMP_SCREEN_LEFT = width - 6 - PIXAR_LAMP_SIZE.width
+const LAMP_TITLE_ROOM = 92 // lugar que el título le deja a la base de la lámpara
+// Apunta al centro de la primera parte del título, un poco arriba del piso.
+const LAMP_AIM = pixarLampAim(20 + 100 - LAMP_SCREEN_LEFT, PIXAR_LAMP_SIZE.height - 24)
+const LAMP_TITLE_W = width - 40 - LAMP_TITLE_ROOM
+// Dónde cae el centro del haz sobre el título (x dentro del título) según el
+// giro de la cabeza: la mancha de luz lo sigue.
+const LAMP_ANGLES = [-30, -15, 0, 10, 20, 30, 40, 50, 60, 75]
+const LAMP_SPOT_X = pixarLampHits(PIXAR_LAMP_SIZE.height - 24, LAMP_ANGLES).map((x) => x + LAMP_SCREEN_LEFT - 20)
+// Ventanas de luz: varias, cada una más ancha y tenue, apiladas = una mancha
+// con borde suave (sin máscaras: todo con transform, en el hilo nativo).
+const LAMP_SPOTS = [
+  { w: 70, o: 0.34 },
+  { w: 130, o: 0.28 },
+  { w: 200, o: 0.22 },
+  { w: 300, o: 0.16 },
+]
 const HERO_H = Math.round(width * 1.15)
 const GENRE_PATTERNS = ['poster', 'backdrop', 'poster', 'ranked'] as const
 
@@ -41,6 +61,16 @@ const GENRE_PATTERNS = ['poster', 'backdrop', 'poster', 'ranked'] as const
 export default function StudioScreen() {
   const router = useRouter()
   const { key } = useLocalSearchParams<{ key: string }>()
+  const lamp = key === 'pixar'
+  const lampLight = useRef(new Animated.Value(0)).current
+  const lampHead = useRef(new Animated.Value(-12)).current
+  // Cuánta luz recibe el título: prendida y apuntándole (si la lámpara mira
+  // para otro lado, se apaga).
+  const lampOnTitle = Animated.multiply(
+    lampLight,
+    lampHead.interpolate({ inputRange: [LAMP_AIM - 40, LAMP_AIM - 12, LAMP_AIM + 12, LAMP_AIM + 40], outputRange: [0, 1, 1, 0], extrapolate: 'clamp' })
+  )
+  const lampSpotX = lampHead.interpolate({ inputRange: LAMP_ANGLES, outputRange: LAMP_SPOT_X, extrapolate: 'clamp' })
   const insets = useSafeAreaInsets()
   const { profile } = useAuth()
   const kids = !!profile?.is_kids
@@ -176,7 +206,73 @@ export default function StudioScreen() {
           {heroItem && (
             <View style={styles.heroContent}>
               <Text style={styles.heroKicker}>Destacado en {brandName}</Text>
-              <Text style={styles.heroTitle} numberOfLines={2}>{titleOf(heroItem)}</Text>
+              {lamp ? (
+                // El título sobre el piso de la lámpara. Encima, una copia
+                // cálida y con brillo que aparece cuando la luz lo toca (luz
+                // prendida y cabeza apuntándole).
+                <View style={{ paddingRight: LAMP_TITLE_ROOM }}>
+                  <Text style={styles.heroTitle} numberOfLines={2}>{titleOf(heroItem)}</Text>
+                  {/* Sombra del título en el piso: la luz viene de arriba a la
+                      derecha, así que se proyecta hacia la izquierda, aplastada
+                      y desenfocada. Solo existe con la luz prendida. */}
+                  <Animated.Text
+                    style={[
+                      styles.heroTitle, styles.heroTitleShadow,
+                      { width: LAMP_TITLE_W, opacity: Animated.multiply(lampOnTitle, 0.5) },
+                    ]}
+                    numberOfLines={2}
+                    accessibilityElementsHidden
+                    importantForAccessibility="no"
+                  >
+                    {titleOf(heroItem)}
+                  </Animated.Text>
+                  {/* Rebote: con la luz prendida todo el título toma un tono cálido. */}
+                  <Animated.Text
+                    style={[styles.heroTitle, styles.heroTitleLit, { width: LAMP_TITLE_W, opacity: Animated.multiply(lampOnTitle, 0.3) }]}
+                    numberOfLines={2}
+                    accessibilityElementsHidden
+                    importantForAccessibility="no"
+                  >
+                    {titleOf(heroItem)}
+                  </Animated.Text>
+                  {/* La mancha de luz: donde pega el haz, el título brilla; sigue
+                      a la cabeza cuando se mueve. Cada ventana recorta una copia
+                      iluminada (la copia se mueve al revés y queda quieta). */}
+                  {LAMP_SPOTS.map((sp, k) => {
+                    const left = lampSpotX.interpolate({ inputRange: [-2000, 2000], outputRange: [-2000 - sp.w / 2, 2000 - sp.w / 2] })
+                    return (
+                      <Animated.View
+                        key={k}
+                        style={[
+                          styles.lampSpot,
+                          { width: sp.w, opacity: Animated.multiply(lampOnTitle, sp.o), transform: [{ translateX: left }] },
+                        ]}
+                      >
+                        <Animated.Text
+                          style={[
+                            styles.heroTitle, styles.heroTitleLit, styles.heroTitleSpot,
+                            { width: LAMP_TITLE_W, transform: [{ translateX: Animated.multiply(left, -1) }] },
+                          ]}
+                          numberOfLines={2}
+                          accessibilityElementsHidden
+                          importantForAccessibility="no"
+                        >
+                          {titleOf(heroItem)}
+                        </Animated.Text>
+                      </Animated.View>
+                    )
+                  })}
+                  <PixarLamp
+                    light={lampLight}
+                    head={lampHead}
+                    aim={LAMP_AIM}
+                    screenLeft={LAMP_SCREEN_LEFT}
+                    style={{ right: -14, bottom: -2 }}
+                  />
+                </View>
+              ) : (
+                <Text style={styles.heroTitle} numberOfLines={2}>{titleOf(heroItem)}</Text>
+              )}
               {!!heroItem.genre_ids?.length && (
                 <Text style={styles.heroMeta} numberOfLines={1}>
                   {[label(heroItem.media_type === 'tv' ? 'tv' : 'movie').replace(/s$/, ''), ...genreNames(heroItem.genre_ids).slice(0, 2)].join(' · ')}
@@ -272,6 +368,21 @@ const styles = StyleSheet.create({
   heroTitle: {
     color: '#fff', fontSize: 34, fontWeight: '900', letterSpacing: -1,
     textShadowColor: 'rgba(0,0,0,0.5)', textShadowRadius: 12,
+  },
+  heroTitleLit: {
+    position: 'absolute', left: 0, top: 0,
+    color: '#FFE6AE', textShadowColor: 'rgba(255,196,100,0.9)', textShadowRadius: 16,
+  },
+  // Donde pega el haz: casi blanco, con un resplandor más ancho.
+  heroTitleSpot: { top: 20, color: '#FFF8E6', textShadowColor: 'rgba(255,214,140,1)', textShadowRadius: 22 },
+  lampSpot: { position: 'absolute', left: 0, top: -20, bottom: -20, overflow: 'hidden' },
+  heroTitleShadow: {
+    position: 'absolute', left: 0, top: 0, zIndex: -1,
+    color: '#000', textShadowColor: '#000', textShadowRadius: 8,
+    // Se da vuelta sobre la base (cae al piso), se aplasta y se inclina a la
+    // izquierda, lejos de la lámpara.
+    transformOrigin: 'bottom',
+    transform: [{ skewX: '-48deg' }, { scaleY: -0.28 }],
   },
   heroMeta: { color: colors.textDim, fontSize: 14, fontWeight: '600', marginTop: 6 },
   heroBtn: {
