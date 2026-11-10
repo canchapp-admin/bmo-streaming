@@ -10,7 +10,27 @@
       "Bash(adb shell *)",
       "Read(//Users/diegoguzzo/**)",
       "Bash(kill 14219 14242)",
-      "Bash(adb disconnect *)"
+      "Bash(adb disconnect *)",
+      "Bash(which tizen *)",
+      "Bash(grep -n \"vlcRef.current\" src/app/player.tsx; echo ---; sed -n 1,80p vendor/react-native-video-vlc/src/types/*.ts 2>/dev/null | head -80; ls vendor/react-native-video-vlc/src/types)",
+      "Bash(npx expo *)",
+      "Bash(./node_modules/.bin/expo export *)",
+      "Bash(npm install *)",
+      "Bash(sips -g pixelWidth -g pixelHeight assets/tv_icons/icon-bmo-black.png assets/tv_icons/icon-400x240.png)",
+      "Bash(chmod +x scripts/tizen-install.sh)",
+      "Bash(bash -n scripts/tizen-install.sh)",
+      "Bash(./scripts/tizen-install.sh)",
+      "Bash(./scripts/tizen-install.sh 192.168.0.42)",
+      "Bash(xargs -0 sed -i '' -e 's|\"/_expo/|\"./_expo/|g' -e 's|\"/assets/|\"./assets/|g' -e 's|href=\"/favicon|href=\"./favicon|g')",
+      "Bash(cp -R .tizen-web/. .tizen-build/)",
+      "Bash(sed -i '' -e 's|<script src=\"./_expo|<script src=\"./tizen-boot.js\"></script><script src=\"./_expo|' .tizen-build/index.html)",
+      "Bash(sips -Z 512 assets/tv_icons/icon-bmo-black.png --out .tizen-build/icon.png)",
+      "Bash(pkill -f \"http.server 8099\")",
+      "Bash(printf '\\\\n# Tizen / Samsung TV \\(scripts/tizen-install.sh\\)\\\\n.tizen-web/\\\\n.tizen-build/\\\\n*.wgt\\\\n')",
+      "Bash(./node_modules/.bin/tsc --noEmit)",
+      "Bash(brew search *)",
+      "Bash(curl -sI -L --max-time 30 http://download.tizen.org/sdk/Installer/)",
+      "Bash(curl -s --max-time 60 http://download.tizen.org/sdk/Installer/)"
     ]
   }
 }
