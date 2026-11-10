@@ -114,15 +114,9 @@ const EFFECTS: Record<string, Effect | Effect[]> = {
     shape: { kind: 'symbol', name: 'circle.fill', colors: ['#FCCC12', '#F37021', '#CD1C54', '#6E55DC', '#069DE0', '#05AC3F'] },
     size: [6, 12], speed: [3200, 5200], sway: 20,
   },
-  // Disney: polvo mágico que cae titilando.
-  disney: [
-    {
-      type: 'fall', count: 30,
-      shape: { kind: 'symbol', name: 'sparkle', colors: ['#FFFFFF', '#FFF3C4', '#CFE3FF'] },
-      size: [6, 14], speed: [3800, 6000], sway: 30,
-    },
-    { type: 'twinkle', count: 18, color: '#FFF3C4' },
-  ],
+  // Disney+: cielo estrellado de fondo. El protagonista es la estrella fugaz
+  // que cruza y enciende el título destacado (components/ShootingStar).
+  disney: { type: 'twinkle', count: 22, color: '#FFF3C4' },
   disneyanimation: {
     type: 'fall', count: 30,
     shape: { kind: 'symbol', name: 'sparkle', colors: ['#FFFFFF', '#FFF3C4', '#CFE3FF'] },

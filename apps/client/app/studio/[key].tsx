@@ -1,4 +1,5 @@
 import { BackButton } from '@/components/BackButton'
+import { ShootingStarTitle } from '@/components/ShootingStar'
 import { PixarLamp, PIXAR_LAMP_SIZE, ThemeEffect, pixarLampAim, pixarLampHits } from '@/components/ThemeEffect'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { useRef } from 'react'
@@ -270,6 +271,9 @@ export default function StudioScreen() {
                     style={{ right: -14, bottom: -2 }}
                   />
                 </View>
+              ) : key === 'disney' ? (
+                // Disney+: una estrella fugaz cruza y enciende el título.
+                <ShootingStarTitle title={titleOf(heroItem)} style={styles.heroTitle} />
               ) : (
                 <Text style={styles.heroTitle} numberOfLines={2}>{titleOf(heroItem)}</Text>
               )}

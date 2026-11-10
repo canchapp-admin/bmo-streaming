@@ -730,6 +730,41 @@ function isLatinTrack(t: TrackInfo): boolean {
   return /\b(?:latino|latinoamerican[oa]|lat|mex|419)\b/i.test(t.label)
 }
 
+// Idioma legible de una pista de audio REAL del archivo (lo que lee VLC), o
+// null si el archivo no lo dice.
+function trackLangName(t: TrackInfo): string | null {
+  if (isLatinTrack(t)) return 'Latino'
+  const lang = (t.lang ?? '').toLowerCase()
+  if (/^(?:es|spa)[-_]es\b/.test(lang) || /\b(?:castellano|españa|spain|cast)\b/i.test(t.label)) return 'Castellano'
+  if (isSpanishTrack(t)) return 'Español'
+  return LANG_NAMES[lang.split(/[-_]/)[0]] ?? null
+}
+
+type LangBadge = { text: string; tone: 'es' | 'cast' | 'other'; kind: 'confirmed' | 'claimed' | 'unknown'; a11y: string }
+const toneOf = (l: string): LangBadge['tone'] =>
+  l === 'Latino' || l === 'Español' ? 'es' : l === 'Castellano' ? 'cast' : 'other'
+
+// Etiqueta de idioma de una fuente en el menú de Calidad, sin prometer de más:
+//  · confirmed: la fuente que está sonando, con los idiomas que trae el
+//    ARCHIVO (pistas de audio que lee VLC). Esto sí es cierto.
+//  · claimed: lo que dice el nombre de la fuente. Puede fallar: se muestra
+//    con borde, no relleno, para que no parezca un dato seguro.
+//  · unknown: el nombre no dice nada → "Sin confirmar", en vez de callar.
+function sourceLangBadge(langs: string[], realTracks: TrackInfo[] | null): LangBadge {
+  if (realTracks && realTracks.length) {
+    const names = [...new Set(realTracks.map(trackLangName).filter((n): n is string => !!n))]
+    if (names.length) {
+      // Primero el español, que es lo que se busca.
+      names.sort((a, b) => Number(toneOf(b) !== 'other') - Number(toneOf(a) !== 'other'))
+      const shown = names.slice(0, 2).join(' · ') + (names.length > 2 ? ` +${names.length - 2}` : '')
+      return { text: shown, tone: toneOf(names[0]), kind: 'confirmed', a11y: `Audio confirmado: ${names.join(', ')}` }
+    }
+  }
+  const claim = audioLangLabel(langs)
+  if (claim) return { text: claim, tone: toneOf(claim), kind: 'claimed', a11y: `${claim}, según el nombre de la fuente, sin confirmar` }
+  return { text: 'Sin confirmar', tone: 'other', kind: 'unknown', a11y: 'Idioma sin confirmar' }
+}
+
 function VlcPlayer({
   uri, referer, srtCues, subsDiagnosis, startAt, meta, hasNext, title, episodeLabel,
   audioLang, hasLatinoAlternative, onChangeAudioLang,
@@ -1667,20 +1702,33 @@ function VlcPlayer({
                     ) : sources.length === 0 ? (
                       <Text style={styles.menuEmpty}>No hay otras fuentes disponibles</Text>
                     ) : (
-                      sources.map((s) => {
-                        const lang = audioLangLabel(s.langs)
-                        const tone = lang === 'Latino' || lang === 'Español' ? 'es' : lang === 'Castellano' ? 'cast' : 'other'
-                        return (
-                          <MenuRow
-                            key={s.i}
-                            label={describeSource(s)}
-                            detail={s.label}
-                            selected={s.i === activeSourceIndex}
-                            badge={lang ? { text: lang, tone } : undefined}
-                            onPress={() => { onPickSource?.(s.i); setTrackPicker(null) }}
-                          />
-                        )
-                      })
+                      <>
+                        {sources.map((s) => {
+                          const active = s.i === activeSourceIndex
+                          return (
+                            <MenuRow
+                              key={s.i}
+                              label={describeSource(s)}
+                              detail={s.label}
+                              selected={active}
+                              // Solo la que suena se puede confirmar: VLC ya
+                              // leyó sus pistas de audio.
+                              badge={sourceLangBadge(s.langs, active ? audioTracks : null)}
+                              onPress={() => { onPickSource?.(s.i); setTrackPicker(null) }}
+                            />
+                          )
+                        })}
+                        <View style={styles.langLegend}>
+                          <View style={styles.langLegendRow}>
+                            <SymbolView name="checkmark.seal.fill" tintColor={colors.success} style={styles.langLegendIcon} />
+                            <Text style={styles.langLegendText}>Confirmado: lo leímos del archivo que estás viendo.</Text>
+                          </View>
+                          <View style={styles.langLegendRow}>
+                            <View style={styles.langLegendOutline} />
+                            <Text style={styles.langLegendText}>Con borde: según el nombre de la fuente; puede no ser exacto.</Text>
+                          </View>
+                        </View>
+                      </>
                     )}
                   </ScrollView>
                 </View>
@@ -1784,7 +1832,7 @@ function MenuRow({
   selected?: boolean
   icon?: string
   chevron?: boolean
-  badge?: { text: string; tone: 'es' | 'cast' | 'other' }
+  badge?: LangBadge
   onPress: () => void
 }) {
   return (
@@ -1794,7 +1842,7 @@ function MenuRow({
       style={[styles.menuRow, selected && styles.menuRowSelected]}
       onPress={onPress}
       accessibilityRole="button"
-      accessibilityLabel={detail ? `${label}, ${detail}` : label}
+      accessibilityLabel={[label, detail, badge?.a11y].filter(Boolean).join(', ')}
       accessibilityState={{ selected: !!selected }}
     >
       <View style={styles.menuCheckCol}>
@@ -1808,15 +1856,31 @@ function MenuRow({
         <Text style={[styles.menuRowText, selected && styles.menuRowTextSelected]} numberOfLines={1}>{label}</Text>
         {!!detail && <Text style={styles.menuRowDetail} numberOfLines={1}>{detail}</Text>}
       </View>
-      {badge && (
-        <View style={[styles.badge, badge.tone === 'es' ? styles.badgeEs : badge.tone === 'cast' ? styles.badgeCast : styles.badgeOther]}>
+      {badge && (badge.kind === 'confirmed' ? (
+        // Confirmado: relleno y con sello.
+        <View style={[styles.badge, styles.badgeRow, badge.tone === 'es' ? styles.badgeEs : badge.tone === 'cast' ? styles.badgeCast : styles.badgeOther]}>
+          <SymbolView name="checkmark.seal.fill" tintColor={badge.tone === 'other' ? '#fff' : '#000'} style={styles.badgeSeal} />
           <Text style={[styles.badgeText, badge.tone === 'other' && styles.badgeTextLight]}>{badge.text}</Text>
         </View>
-      )}
+      ) : (
+        // Según el nombre (o desconocido): solo borde, se lee como "probable".
+        <View
+          style={[
+            styles.badge, styles.badgeOutline,
+            { borderColor: badge.kind === 'unknown' ? 'rgba(255,255,255,0.3)' : BADGE_TONE[badge.tone] },
+          ]}
+        >
+          <Text style={[styles.badgeText, { color: badge.kind === 'unknown' ? 'rgba(255,255,255,0.55)' : BADGE_TONE[badge.tone] }]}>
+            {badge.text}
+          </Text>
+        </View>
+      ))}
       {chevron && <SymbolView name="chevron.right" weight="semibold" tintColor="rgba(255,255,255,0.5)" style={styles.menuChevron} />}
     </Touchable>
   )
 }
+
+const BADGE_TONE = { es: colors.success, cast: '#FF9F0A', other: 'rgba(255,255,255,0.75)' } as const
 
 // Control segmentado para el estilo del subtítulo.
 function SubtitleStyleRow<T extends string>({
@@ -2118,6 +2182,14 @@ const styles = StyleSheet.create({
   badgeOther: { backgroundColor: 'rgba(120,120,128,0.7)' },
   badgeText: { fontSize: 11.5, fontWeight: '800', color: '#000' },
   badgeTextLight: { color: '#fff' },
+  badgeRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  badgeSeal: { width: 11, height: 11 },
+  badgeOutline: { backgroundColor: 'transparent', borderWidth: 1.2, paddingVertical: 2 },
+  langLegend: { gap: 6, paddingHorizontal: 12, paddingTop: 10, paddingBottom: 6 },
+  langLegendRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  langLegendIcon: { width: 12, height: 12 },
+  langLegendOutline: { width: 12, height: 9, borderRadius: 3, borderWidth: 1.2, borderColor: 'rgba(255,255,255,0.6)' },
+  langLegendText: { flex: 1, color: 'rgba(255,255,255,0.55)', fontSize: 11.5, lineHeight: 15 },
 
   // Estilo del subtítulo
   styleContent: { paddingHorizontal: 8, paddingBottom: 10, gap: 14 },
