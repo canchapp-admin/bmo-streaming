@@ -12,6 +12,7 @@
 // que es puro y está cubierto por tests.
 import { tmdbService } from '../tmdb/tmdb.service'
 import { TTLCache } from './cache'
+import { rdGuard, classifyStatus, classifyPlaceholder, redactSecrets, interpretUser, type AccountHealth } from './rd.guard'
 import {
   rankCandidates, selectRunnable, parseCacheState,
   type AudioTag, type HwTier, type MediaRef, type ScoredCandidate, type TorrentioStream,
@@ -314,16 +315,32 @@ async function followResolveUrl(startUrl: string): Promise<string | null> {
       await r.body?.cancel().catch(() => {})
       if (!loc) {
         // Sin más redirects: si la respuesta fue exitosa, esta ES la URL final.
-        if (r.status < 200 || r.status >= 400) return null
-        return isTorrentioErrorPlaceholder(url) ? null : url
+        const bad = classifyStatus(r.status)
+        if (bad) {
+          const ra = Number(r.headers.get('retry-after'))
+          rdGuard.recordFailure(bad, `HTTP ${r.status} ${redactSecrets(new URL(url).host)}`, ra > 0 ? ra * 1000 : undefined)
+          return null
+        }
+        return failIfPlaceholder(url)
       }
       url = new URL(loc, url).toString()
-      if (isTorrentioErrorPlaceholder(url)) return null
+      if (isTorrentioErrorPlaceholder(url)) return failIfPlaceholder(url)
     }
-    return isTorrentioErrorPlaceholder(url) ? null : url
-  } catch {
+    return failIfPlaceholder(url)
+  } catch (e) {
+    rdGuard.recordFailure('network', redactSecrets((e as Error).message ?? 'error'))
     return null
   }
+}
+
+// Devuelve la URL si es válida; si es un placeholder de error de Torrentio la
+// descarta y deja registrado POR QUÉ (cuenta/acceso vs. problema de ese torrent).
+function failIfPlaceholder(url: string): string | null {
+  if (!isTorrentioErrorPlaceholder(url)) return url
+  const { reason, file } = classifyPlaceholder(url)
+  rdGuard.recordFailure(reason, `placeholder ${file}`)
+  if (reason === 'auth') console.error(`[debrid] ⚠️ Torrentio devolvió un placeholder de cuenta (${file}) — revisar token/premium/IP en Real-Debrid`)
+  return null
 }
 
 export const debridEnabled = activeSources().length > 0
@@ -360,7 +377,9 @@ export type DebridRequest = {
 // pensado cuando podían entrar no-cacheados lentos; ya no es el caso.)
 export type Wave = { count: number; waitMs: number }
 const WAVES: Wave[] = [
-  { count: 4, waitMs: 2500 },
+  // 3 (antes 4): cada candidato cuesta varias llamadas a RD sobre una cuenta
+  // compartida con tope de 250 req/min; 3 siguen dando margen de sobra.
+  { count: 3, waitMs: 2500 },
   { count: 8, waitMs: 4000 },
 ]
 
@@ -507,6 +526,13 @@ export async function resolveDebridStream(
   pick?: number
 ): Promise<DebridResult | null> {
   if (!activeSources().length) return null
+  // Breaker: RD está limitando, la cuenta falla o venimos de una racha de
+  // resoluciones vacías. Insistir solo empeora el bloqueo; el resolver cae a scrapers.
+  if (!rdGuard.allow()) {
+    const g = rdGuard.snapshot()
+    console.error(`[debrid] breaker abierto (${g.openReason}) — reintenta en ${Math.ceil(g.retryInMs / 1000)}s`)
+    return null
+  }
 
   const t0 = Date.now()
   const imdbId = req.imdbId ?? await imdbIdOf(req.type, req.tmdbId)
@@ -541,6 +567,7 @@ export async function resolveDebridStream(
     if (!chosen) return null
     try {
       const out = await tryCandidate(chosen)
+      rdGuard.recordSuccess()
       const cp = out.c.parsed
       console.error(`[debrid] fuente elegida #${pick} → ${cp.filename}`)
       return {
@@ -559,8 +586,10 @@ export async function resolveDebridStream(
   const winner = await raceInWaves(runnable, WAVES, tryCandidate)
   if (!winner) {
     console.error(`[debrid] torrentio ${tFetch}ms + carrera ${Date.now() - tRace}ms — ninguno de ${runnable.length} resolvió`)
+    rdGuard.recordExhausted()
     return null
   }
+  rdGuard.recordSuccess()
 
   const p = winner.c.parsed
   console.error(
@@ -655,4 +684,46 @@ export async function debugTorrentio(
     })),
     rejected: r.rejected.slice(0, 15),
   }
+}
+
+// ── Salud de la cuenta de Real-Debrid ──
+//
+// GET /user de la API de RD (con Bearer, no query param) dice si la cuenta sigue
+// siendo premium y cuántos días le quedan. Si vence, TODA resolución cae en
+// silencio a los scrapers: esto permite verlo (y alertar) antes de que pase.
+// Cacheado 10 min: es un chequeo de salud, no hace falta golpear a RD por cada visita.
+const RD_API = 'https://api.real-debrid.com/rest/1.0'
+const healthCache = new TTLCache<AccountHealth>(10 * 60_000)
+
+async function fetchAccountHealth(): Promise<AccountHealth> {
+  if (!DEBRID_KEY) return { ok: false, error: 'DEBRID_KEY no configurada' }
+  try {
+    const r = await fetch(`${RD_API}/user`, {
+      headers: { Authorization: `Bearer ${DEBRID_KEY}` },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT),
+    })
+    if (r.status === 401) return { ok: false, error: 'Token inválido o vencido (RD error 8)' }
+    if (r.status === 403) return { ok: false, error: 'Cuenta bloqueada o no premium (RD 403)' }
+    if (r.status === 429) {
+      rdGuard.recordFailure('rate_limited', 'HTTP 429 en /user')
+      return { ok: false, error: 'Rate limit de RD (429)' }
+    }
+    if (!r.ok) return { ok: false, error: `RD respondió HTTP ${r.status}` }
+    const h = interpretUser((await r.json()) as { type?: string; premium?: number; expiration?: string })
+    if (h.warning) console.error(`[debrid] ⚠️ ${h.warning}`)
+    return h
+  } catch (e) {
+    return { ok: false, error: redactSecrets((e as Error).message ?? 'error de red') }
+  }
+}
+
+export async function debridHealth() {
+  // Un resultado con error NO se cachea: TTLCache no persiste los fallos si el
+  // producer lanza, así que se reintenta en la próxima consulta.
+  const account = await healthCache.resolve('user', async () => {
+    const h = await fetchAccountHealth()
+    if (h.error) throw new Error(h.error)
+    return h
+  }).catch((e: Error): AccountHealth => ({ ok: false, error: e.message }))
+  return { enabled: !!DEBRID_KEY, account, guard: rdGuard.snapshot() }
 }

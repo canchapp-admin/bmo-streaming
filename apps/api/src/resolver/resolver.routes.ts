@@ -5,6 +5,7 @@ import {
 } from './resolver.service'
 import { langCode } from './hls'
 import type { HwTier } from './torrentio.parse'
+import { debridHealth } from './torrentio'
 
 function parseLang(v?: string): AudioLang {
   return v === 'latino' ? 'latino' : 'original'
@@ -106,6 +107,10 @@ export const resolverRoutes = new Elysia({ prefix: '/resolve' })
     ({ params, query }) => debugDebrid('tv', Number(params.id), Number(params.season), Number(params.episode), (query as { lang?: string }).lang),
     { params: t.Object({ id: t.String(), season: t.String(), episode: t.String() }) }
   )
+
+  // Salud de la cuenta de RD (premium/días restantes) + estado del breaker y
+  // contadores de fallos por motivo. Nunca devuelve la key.
+  .get('/debug/debrid-health', () => debridHealth())
 
   // Dónde se van los segundos de una resolución en frío. Salta la caché de
   // streams: mide el peor caso, que es el que paga el primero en reproducir.
