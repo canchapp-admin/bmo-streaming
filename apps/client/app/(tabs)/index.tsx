@@ -12,7 +12,7 @@ import { SymbolView } from 'expo-symbols'
 import { tmdb, type MediaItem } from '@/lib/tmdb'
 import { useAsync } from '@/lib/useAsync'
 import { PosterRow } from '@/components/PosterRow'
-import { PlatformRow } from '@/components/PlatformRow'
+import { PlatformRow, FranchiseRow } from '@/components/PlatformRow'
 import { RowHeading } from '@/components/RowHeading'
 import { BackdropRow } from '@/components/BackdropRow'
 import { RankedRow } from '@/components/RankedRow'
@@ -210,7 +210,7 @@ export default function HomeScreen() {
             <ContinueRow
               items={watching}
               onChange={loadWatching}
-              onSeeAll={() => router.navigate('/library')}
+              onSeeAll={() => router.push('/continue' as never)}
             />
           </Reveal>
 
@@ -220,7 +220,7 @@ export default function HomeScreen() {
             <PosterRow title="Mi lista" items={myList} onPressTitle={() => router.navigate('/library')} />
           </Reveal>
 
-          <Reveal index={2}><PosterRow title="Tendencias" items={rows.trending} /></Reveal>
+          <Reveal index={2}><PosterRow title="Tendencias" items={rows.trending} size="lg" /></Reveal>
 
           {/* Porque viste X: parecidos al último título en curso */}
           {because && seed && (
@@ -250,15 +250,19 @@ export default function HomeScreen() {
             <PosterRow title="Para reírse" items={rows.comedy} onPressTitle={browse(GENRE.comedy, 'Comedia')} />
           </Reveal>
 
-          <Reveal index={8}><RankedRow title="Series del momento" items={rows.popularSeries} /></Reveal>
+          <Reveal index={8}><BackdropRow title="Series del momento" items={rows.popularSeries} /></Reveal>
 
-          <Reveal index={9}><BackdropRow title="Una peli cortita" items={rows.short} /></Reveal>
+          {/* Separada de Plataformas a propósito: dos filas de logos seguidas
+              se leen como una sola tira de publicidad. */}
+          <Reveal index={8}><FranchiseRow kids={kids} /></Reveal>
+
+          <Reveal index={9}><BackdropRow title="Una peli cortita" items={rows.short} size="lg" /></Reveal>
 
           <Reveal index={10}>
             {kids ? (
-              <PosterRow title="En familia" items={rows.last} onPressTitle={browse(GENRE.family, 'Familia')} />
+              <PosterRow title="En familia" items={rows.last} size="lg" onPressTitle={browse(GENRE.family, 'Familia')} />
             ) : (
-              <PosterRow title="Terror" items={rows.last} onPressTitle={browse(GENRE.horror, 'Terror')} />
+              <PosterRow title="Terror" items={rows.last} size="lg" onPressTitle={browse(GENRE.horror, 'Terror')} />
             )}
           </Reveal>
         </View>

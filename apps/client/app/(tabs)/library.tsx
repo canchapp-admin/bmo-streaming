@@ -1,8 +1,9 @@
 import { useCallback, useState } from 'react'
 import {
   ScrollView, View, Text, StyleSheet, Dimensions,
-  Alert,
+  Alert, Switch,
 } from 'react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useFocusEffect, useRouter } from 'expo-router'
 import { Image } from 'expo-image'
 import { SymbolView } from 'expo-symbols'
@@ -25,6 +26,10 @@ import { PosterCard } from '@/components/PosterCard'
 import { ContinueRow } from '@/components/ContinueRow'
 import { Touchable } from '@/components/Touchable'
 import { EmptyState } from '@/components/EmptyState'
+import { RowHeading } from '@/components/RowHeading'
+import { GlassMenu } from '@/components/GlassMenu'
+import { Glass } from '@/components/Glass'
+import { Segmented } from '@/components/Segmented'
 import { screenTitle, rowHeading } from '@/lib/typography'
 import { backdropUrl } from '@/lib/tmdb'
 import type { MediaItem } from '@/lib/tmdb'
@@ -36,35 +41,32 @@ const GRID_CARD = Math.floor(
   (Dimensions.get('window').width - PAD * 2 - GRID_GAP * 2) / 3
 )
 
-// Encabezado de sección reutilizable: título a la izquierda, conteo discreto y
-// una acción opcional a la derecha. Existe para que TODAS las secciones
-// compartan el mismo margen — antes "Mi Lista" se pintaba con un <Text> suelto
-// sin padding y quedaba pegada al borde, mientras "Descargas" sí lo tenía.
-function SectionHeader({
-  title, count, action,
-}: {
-  title: string
-  count?: number
-  action?: React.ReactNode
-}) {
-  return (
-    <View style={styles.headingRow}>
-      <View style={styles.headingLeft}>
-        <Text style={styles.heading}>{title}</Text>
-        {count != null && count > 0 && <Text style={styles.count}>{count}</Text>}
-      </View>
-      {action}
-    </View>
-  )
-}
+type ListFilter = 'all' | 'movie' | 'tv'
+type ListSort = 'recent' | 'az'
 
+// Biblioteca, ordenada por lo que se usa más a menudo:
+//
+//  1. Seguir viendo — lo que se retoma hoy: la fila de tarjetas grandes, con
+//     tope de 10 y "Ver todo" hacia la lista completa (app/continue.tsx).
+//  2. Descargas — lista agrupada de iOS (como Ajustes): cada descarga es una
+//     fila y "Descarga automática" es una fila más con su interruptor, en vez
+//     de una pastilla suelta en el encabezado que no se entendía.
+//  3. Mi lista — grilla real de 3 columnas, con un control segmentado para
+//     filtrar Películas / Series y un menú para ordenar. Antes la grilla
+//     calculaba 3 columnas pero se dibujaban 2 con un hueco a la derecha.
+//
+// Encabezados con el mismo componente que el resto de la app (RowHeading),
+// y "Mi lista" con minúscula como en el Inicio.
 export default function LibraryScreen() {
   const router = useRouter()
+  const insets = useSafeAreaInsets()
   const [list, setList] = useState<LibraryItem[]>([])
   const [watching, setWatching] = useState<Progress[]>([])
   const [downloads, setDownloads] = useState<DownloadItem[]>([])
   const [smartEnabled, setSmartEnabled] = useState(true)
   const [editingList, setEditingList] = useState(false)
+  const [filter, setFilter] = useState<ListFilter>('all')
+  const [sort, setSort] = useState<ListSort>('recent')
 
   const reload = useCallback(() => {
     getMyList().then(setList)
@@ -83,8 +85,7 @@ export default function LibraryScreen() {
   async function removeFromList(item: LibraryItem) {
     await removeFromMyList(item.id, item.media_type)
     // Se re-lee del almacenamiento en vez de filtrar el estado: si el borrado
-    // no llegó a aplicarse, la pantalla lo refleja en el momento en lugar de
-    // mentir hasta la próxima recarga.
+    // no llegó a aplicarse, la pantalla lo refleja en el momento.
     const fresh = await getMyList()
     setList(fresh)
     if (fresh.length === 0) setEditingList(false)
@@ -128,21 +129,28 @@ export default function LibraryScreen() {
     })
   }
 
-  async function toggleSmart() {
-    const next = !smartEnabled
+  async function toggleSmart(next: boolean) {
     setSmartEnabled(next)
     await setSmartDownload(next)
   }
 
+  const movies = list.filter((i) => i.media_type === 'movie').length
+  const series = list.length - movies
+  const shown = list
+    .filter((i) => filter === 'all' || i.media_type === filter)
+    .slice()
+    .sort((a, b) => (sort === 'az' ? a.title.localeCompare(b.title, 'es') : 0))
+
+  const doneBytes = downloads.reduce((n, d) => n + (d.status === 'done' ? d.size ?? 0 : 0), 0)
   const empty = list.length === 0 && watching.length === 0 && downloads.length === 0
 
   return (
     <ScrollView
       style={styles.container}
-      contentInsetAdjustmentBehavior="automatic"
+      contentInsetAdjustmentBehavior="never"
       // La barra de pestañas flota sobre el contenido: sin este colchón, la
       // última fila queda debajo y no se puede tocar.
-      contentContainerStyle={styles.content}
+      contentContainerStyle={[styles.content, { paddingTop: insets.top + 8 }]}
       showsVerticalScrollIndicator={false}
     >
       <Text style={styles.title}>Biblioteca</Text>
@@ -152,39 +160,25 @@ export default function LibraryScreen() {
           <EmptyState
             icon="bookmark"
             title="Tu biblioteca está vacía"
-            subtitle="Guarda títulos en Mi Lista, sigue viendo algo o descárgalo para verlo aquí."
+            subtitle="Guarda títulos en Mi lista, sigue viendo algo o descárgalo para verlo aquí."
           />
         </View>
       ) : (
         <>
-          {/* Sin envolver en styles.section: ContinueRow ya aporta su propio
-              margen inferior, y sumarlos duplicaba el hueco. */}
-          <ContinueRow items={watching} onChange={reload} />
+          {/* Sin envolver en styles.section: ContinueRow ya trae su margen. */}
+          <ContinueRow
+            items={watching}
+            onChange={reload}
+            onSeeAll={() => router.push('/continue' as never)}
+          />
 
           {downloads.length > 0 && (
             <View style={styles.section}>
-              <SectionHeader
-                title="Descargas"
-                count={downloads.length}
-                action={
-                  <Touchable scaleTo={0.95} haptic="light" style={styles.smartPill} onPress={toggleSmart}>
-                    <SymbolView
-                      name={smartEnabled ? 'bolt.fill' : 'bolt.slash'}
-                      tintColor={smartEnabled ? colors.warning : colors.textMuted}
-                      style={styles.smartIcon}
-                    />
-                    <Text style={[styles.smartText, !smartEnabled && styles.smartTextOff]}>
-                      Automática
-                    </Text>
-                  </Touchable>
-                }
-              />
-              {/* Agrupadas en una tarjeta con separadores, como las listas de
-                  iOS: filas sueltas sobre negro no se leían como un conjunto. */}
-              <View style={styles.dlGroup}>
+              <RowHeading title="Descargas" />
+              <View style={styles.group}>
                 {downloads.map((item, i) => (
                   <View key={item.key}>
-                    {i > 0 && <View style={styles.dlSeparator} />}
+                    {i > 0 && <View style={styles.separator} />}
                     <DownloadRow
                       item={item}
                       onPlay={() => playDownload(item)}
@@ -192,46 +186,111 @@ export default function LibraryScreen() {
                     />
                   </View>
                 ))}
+                <View style={[styles.separator, styles.separatorFull]} />
+                <View style={styles.settingRow}>
+                  <SymbolView name="bolt.fill" tintColor={colors.warning} style={styles.settingIcon} />
+                  <View style={styles.flex}>
+                    <Text style={styles.settingLabel}>Descarga automática</Text>
+                    <Text style={styles.settingHint}>Baja el siguiente episodio de lo que estás viendo.</Text>
+                  </View>
+                  <Switch value={smartEnabled} onValueChange={toggleSmart} accessibilityLabel="Descarga automática" />
+                </View>
               </View>
+              {doneBytes > 0 && (
+                <Text style={styles.footnote}>{formatBytes(doneBytes)} usados en este iPhone</Text>
+              )}
             </View>
           )}
 
-          {list.length > 0 && (
-            <View style={styles.section}>
-              <SectionHeader
-                title="Mi Lista"
-                count={list.length}
-                action={
+          <View style={styles.section}>
+            <View style={styles.listHeader}>
+              <Text style={styles.heading}>Mi lista</Text>
+              {list.length > 0 && (
+                <View style={styles.listActions}>
+                  {!editingList && (
+                    <GlassMenu
+                      size="compact"
+                      align="right"
+                      label={sort === 'recent' ? 'Recientes' : 'A–Z'}
+                      accessibilityLabel="Ordenar Mi lista"
+                      options={[
+                        { key: 'recent', label: 'Agregadas recientemente' },
+                        { key: 'az', label: 'Por nombre (A–Z)' },
+                      ]}
+                      selectedKey={sort}
+                      onSelect={(k) => setSort(k as ListSort)}
+                    />
+                  )}
                   <Touchable
-                    scaleTo={0.95}
+                    scaleTo={0.94}
                     haptic="light"
-                    hitSlop={8}
                     onPress={() => setEditingList((v) => !v)}
+                    accessibilityRole="button"
                   >
-                    <Text style={[styles.editText, editingList && styles.editTextOn]}>
-                      {editingList ? 'Listo' : 'Editar'}
-                    </Text>
+                    <Glass
+                      radius={20}
+                      interactive
+                      tint={editingList ? '#fff' : undefined}
+                      style={[styles.editBtn, editingList && styles.editBtnOn]}
+                    >
+                      <Text style={[styles.editText, editingList && styles.editTextOn]}>
+                        {editingList ? 'Listo' : 'Editar'}
+                      </Text>
+                    </Glass>
                   </Touchable>
-                }
-              />
-              <View style={styles.grid}>
-                {list.map((item) => (
-                  <PosterCard
-                    key={`${item.media_type}-${item.id}`}
-                    item={item as MediaItem}
-                    width={GRID_CARD}
-                    // La X solo en modo edición: permanente ensuciaba cada
-                    // póster y se tocaba sin querer al ir a abrir el título.
-                    onRemove={editingList ? () => removeFromList(item) : undefined}
-                  />
-                ))}
-              </View>
+                </View>
+              )}
             </View>
-          )}
+
+            {list.length === 0 ? (
+              <Text style={styles.listEmpty}>
+                Tocá + en cualquier título, o mantené apretado un póster, para guardarlo acá.
+              </Text>
+            ) : (
+              <>
+                {/* Filtro solo si hay de los dos tipos: con una sola clase de
+                    título, el control no tendría nada que separar. */}
+                {movies > 0 && series > 0 && (
+                  <View style={styles.segmentedWrap}>
+                    <Segmented<ListFilter>
+                      value={filter}
+                      onChange={setFilter}
+                      options={[
+                        { key: 'all', label: `Todo  ${list.length}` },
+                        { key: 'movie', label: `Películas  ${movies}` },
+                        { key: 'tv', label: `Series  ${series}` },
+                      ]}
+                    />
+                  </View>
+                )}
+                <View style={styles.grid}>
+                  {shown.map((item) => (
+                    // Ancho fijo en un View propio: PosterCard va envuelto en el
+                    // menú contextual, y sin este contenedor el flexWrap no
+                    // respetaba su ancho y la grilla quedaba en 2 columnas.
+                    <View key={`${item.media_type}-${item.id}`} style={{ width: GRID_CARD }}>
+                      <PosterCard
+                        item={item as MediaItem}
+                        width={GRID_CARD}
+                        // La X solo en modo edición: permanente ensuciaba cada
+                        // póster y se tocaba sin querer al ir a abrir el título.
+                        onRemove={editingList ? () => removeFromList(item) : undefined}
+                      />
+                    </View>
+                  ))}
+                </View>
+              </>
+            )}
+          </View>
         </>
       )}
     </ScrollView>
   )
+}
+
+function formatBytes(n: number) {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1).replace('.', ',')} GB`
+  return `${Math.max(1, Math.round(n / 1e6))} MB`
 }
 
 // ── Fila de descarga ──────────────────────────────────────────────────────────
@@ -304,55 +363,47 @@ function DownloadRow({
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000' },
   content: { paddingBottom: 130 },
-  title: {
-    ...screenTitle,
-    paddingHorizontal: PAD,
-    paddingTop: 12, paddingBottom: 20,
-  },
+  flex: { flex: 1 },
+  title: { ...screenTitle, paddingHorizontal: PAD, paddingBottom: 20 },
   emptyBox: { paddingTop: 70, alignItems: 'center' },
 
-  // Ritmo vertical uniforme. Antes ContinueRow traía su propio marginBottom y
-  // la sección siguiente sumaba marginTop: los ~48px resultantes abrían un
-  // hueco que no coincidía con ningún otro espacio de la pantalla.
-  section: { marginBottom: 30 },
-  headingRow: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: PAD, marginBottom: 13,
-  },
-  headingLeft: { flexDirection: 'row', alignItems: 'baseline', gap: 8 },
+  section: { marginBottom: 32 },
   heading: rowHeading,
-  count: { color: colors.textMuted, fontSize: 16, fontWeight: '600' },
 
-  editText: { color: colors.textDim, fontSize: 15, fontWeight: '600' },
-  editTextOn: { color: '#fff' },
-
-  smartPill: {
-    flexDirection: 'row', alignItems: 'center', gap: 5,
-    backgroundColor: colors.fill,
-    paddingHorizontal: 11, paddingVertical: 6, borderRadius: 20,
+  // Lista agrupada de iOS: tarjeta con separadores que arrancan después de la
+  // miniatura, y la fila de ajuste al final con separador completo.
+  group: {
+    marginHorizontal: PAD,
+    backgroundColor: colors.surface,
+    borderRadius: 18,
+    borderCurve: 'continuous',
+    overflow: 'hidden',
   },
-  smartIcon: { width: 12, height: 12 },
-  smartText: { color: colors.warning, fontSize: 12.5, fontWeight: '600' },
-  smartTextOff: { color: colors.textMuted },
+  separator: { height: StyleSheet.hairlineWidth, backgroundColor: colors.hairline, marginLeft: 130 },
+  separatorFull: { marginLeft: 0 },
+  settingRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 14, paddingVertical: 12 },
+  settingIcon: { width: 18, height: 18 },
+  settingLabel: { color: colors.text, fontSize: 16, fontWeight: '500' },
+  settingHint: { color: colors.textMuted, fontSize: 12.5, marginTop: 2 },
+  footnote: { color: colors.textMuted, fontSize: 13, paddingHorizontal: PAD + 14, marginTop: 8 },
+
+  listHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: PAD, marginBottom: 14, minHeight: 40,
+  },
+  listActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  editBtn: { height: 40, paddingHorizontal: 16, alignItems: 'center', justifyContent: 'center' },
+  editBtnOn: { backgroundColor: '#fff' },
+  editText: { color: colors.text, fontSize: 15, fontWeight: '600' },
+  editTextOn: { color: '#000' },
+  listEmpty: { color: colors.textMuted, fontSize: 15, lineHeight: 21, paddingHorizontal: PAD },
+  segmentedWrap: { paddingHorizontal: PAD, marginBottom: 16 },
 
   grid: {
     flexDirection: 'row', flexWrap: 'wrap',
-    gap: GRID_GAP, paddingHorizontal: PAD,
+    columnGap: GRID_GAP, rowGap: 18, paddingHorizontal: PAD,
   },
 
-  dlGroup: {
-    marginHorizontal: PAD,
-    backgroundColor: colors.fillSubtle,
-    borderRadius: 16,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.fill,
-    overflow: 'hidden',
-  },
-  dlSeparator: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: colors.fill,
-    marginLeft: 130, // arranca después de la miniatura, como las listas de iOS
-  },
   dlRow: {
     flexDirection: 'row', alignItems: 'center',
     paddingHorizontal: 12, paddingVertical: 11, gap: 12,

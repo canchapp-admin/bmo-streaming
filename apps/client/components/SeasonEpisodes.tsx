@@ -1,8 +1,7 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import {
   View,
   Text,
-  ScrollView,
   StyleSheet,
   ActivityIndicator,
 } from 'react-native'
@@ -15,6 +14,7 @@ import { getWatchedEpisodes, getEpisodeProgress, toggleEpisodeWatched, setSeason
 import { prewarmTitle } from '@/lib/stream'
 import { DownloadButton } from './DownloadButton'
 import { Touchable } from './Touchable'
+import { SeasonPicker } from './SeasonPicker'
 import { colors } from '@/lib/theme'
 
 export function SeasonEpisodes({
@@ -23,18 +23,35 @@ export function SeasonEpisodes({
   seasons,
   poster,
   backdrop,
+  nextUp,
 }: {
   tvId: string
   title: string
   seasons: Season[]
   poster: string | null
   backdrop: string | null
+  // El episodio que retoma el botón grande de la ficha ("Continuar T2:E4").
+  // La lista abre en esa temporada y lo destaca.
+  nextUp?: { season: number; episode: number; fresh: boolean } | null
 }) {
   const real = seasons
     .filter((s) => s.season_number >= 1 && s.episode_count > 0)
     .sort((a, b) => a.season_number - b.season_number)
 
-  const [selected, setSelected] = useState(real[0]?.season_number ?? 1)
+  const [selected, setSelected] = useState(nextUp?.season ?? real[0]?.season_number ?? 1)
+  // El punto de retomar llega async: si aparece después de montar, se salta a
+  // su temporada — salvo que el usuario ya haya elegido otra a mano.
+  const userPicked = useRef(false)
+  useEffect(() => {
+    if (!nextUp || userPicked.current) return
+    if (real.some((s) => s.season_number === nextUp.season)) setSelected(nextUp.season)
+  }, [nextUp?.season])
+
+  function pick(n: number) {
+    userPicked.current = true
+    setSelected(n)
+  }
+
   const { data, loading } = useAsync(() => tmdb.season(tvId, selected), [selected])
 
   // Episodios vistos de esta serie ("season:episode")
@@ -65,45 +82,53 @@ export function SeasonEpisodes({
     reloadWatched()
   }
 
+  const seasonComplete = (s: Season) => {
+    let n = 0
+    watched.forEach((k) => { if (k.startsWith(`${s.season_number}:`)) n++ })
+    return n > 0 && n >= s.episode_count
+  }
+  const watchedHere = releasedEps.filter((e) => watched.has(`${selected}:${e}`)).length
+  const summary = data
+    ? [
+        `${data.episodes.length} episodios`,
+        watchedHere > 0 ? (allWatched ? 'Todos vistos' : `${watchedHere} vistos`) : null,
+      ].filter(Boolean).join('  ·  ')
+    : ''
+
   return (
     <View style={styles.wrap}>
-      {/* Selector de temporada */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.seasonBar}
-      >
-        {real.map((s) => {
-          const active = s.season_number === selected
-          return (
-            <Touchable
-              key={s.id}
-              scaleTo={0.94}
-              haptic="selection"
-              onPress={() => setSelected(s.season_number)}
-              style={[styles.seasonChip, active && styles.seasonChipActive]}
-            >
-              <Text style={[styles.seasonText, active && styles.seasonTextActive]}>
-                Temporada {s.season_number}
-              </Text>
-            </Touchable>
-          )
-        })}
-      </ScrollView>
+      {/* Selector desplegable a la izquierda; "Marcar vista" a la derecha. */}
+      <View style={styles.seasonHeader}>
+        <SeasonPicker
+          options={real.map((s) => ({ number: s.season_number, episodes: s.episode_count, done: seasonComplete(s) }))}
+          selected={selected}
+          onSelect={pick}
+        />
+        {/* Acción en línea y no en un menú: es una sola, y tocándola otra
+            vez se deshace, así que no hace falta pedir confirmación. */}
+        {releasedEps.length > 0 && (
+          <Touchable
+            scaleTo={0.94}
+            haptic="medium"
+            onPress={toggleSeason}
+            hitSlop={10}
+            style={styles.markAll}
+            accessibilityRole="button"
+            accessibilityLabel={allWatched ? `Desmarcar la temporada ${selected}` : `Marcar la temporada ${selected} como vista`}
+          >
+            <SymbolView
+              name={allWatched ? 'checkmark.circle.fill' : 'checkmark.circle'}
+              tintColor={allWatched ? colors.success : colors.textDim}
+              style={styles.markAllIcon}
+            />
+            <Text style={[styles.markAllText, allWatched && styles.markAllTextOn]}>
+              {allWatched ? 'Vista' : 'Marcar vista'}
+            </Text>
+          </Touchable>
+        )}
+      </View>
 
-      {/* Marcar temporada completa */}
-      {releasedEps.length > 0 && (
-        <Touchable scaleTo={0.97} haptic="medium" style={styles.markSeasonBtn} onPress={toggleSeason}>
-          <SymbolView
-            name={allWatched ? 'checkmark.circle.fill' : 'circle'}
-            tintColor={allWatched ? colors.success : colors.textDim}
-            style={styles.markSeasonIcon}
-          />
-          <Text style={styles.markSeasonText}>
-            {allWatched ? 'Temporada vista' : 'Marcar temporada como vista'}
-          </Text>
-        </Touchable>
-      )}
+      {!!summary && <Text style={styles.summary}>{summary}</Text>}
 
       {loading && <ActivityIndicator color="#fff" style={styles.spinner} />}
 
@@ -117,6 +142,11 @@ export function SeasonEpisodes({
           poster={poster}
           backdrop={backdrop}
           watched={watched.has(`${selected}:${ep.episode_number}`)}
+          next={
+            nextUp && nextUp.season === selected && nextUp.episode === ep.episode_number
+              ? (nextUp.fresh ? 'Siguiente' : 'Continuar')
+              : null
+          }
           progress={progress.get(`${selected}:${ep.episode_number}`) ?? 0}
           onToggleWatched={() => toggle(selected, ep.episode_number)}
         />
@@ -133,6 +163,7 @@ function EpisodeRow({
   poster,
   backdrop,
   watched,
+  next,
   progress,
   onToggleWatched,
 }: {
@@ -143,6 +174,8 @@ function EpisodeRow({
   poster: string | null
   backdrop: string | null
   watched: boolean
+  // Es el episodio que retoma "Continuar": se destaca para encontrarlo sin buscar.
+  next: 'Siguiente' | 'Continuar' | null
   progress: number // 0–1; 0 = sin empezar
   onToggleWatched: () => void
 }) {
@@ -171,62 +204,68 @@ function EpisodeRow({
     })
   }
 
+  const remaining =
+    released && ep.runtime && progress > 0 && !watched
+      ? Math.max(1, Math.round(ep.runtime * (1 - progress)))
+      : null
+
+  // Miniatura grande + título (2 líneas) y duración, con descarga y visto a
+  // la derecha. Sin sinopsis: la lista se recorre por imagen y título.
   return (
     <Touchable
       scaleTo={0.98}
       haptic="light"
-      style={[styles.epRow, !released && styles.epRowSoon]}
+      style={[styles.epRow, next && styles.epRowNext, !released && styles.epRowSoon]}
       onPressIn={released ? () => prewarmTitle(Number(tvId), true, season, ep.episode_number) : undefined}
       onPress={released ? open : undefined}
       disabled={!released}
+      accessibilityRole="button"
+      accessibilityLabel={`Episodio ${ep.episode_number}, ${ep.name}${watched ? ', visto' : ''}`}
     >
-      <View style={styles.thumbWrap}>
-        {still ? (
-          <Image source={still} style={styles.thumb} contentFit="cover" transition={150} />
-        ) : (
-          <View style={[styles.thumb, styles.thumbEmpty]} />
-        )}
-        {/* Overlay de visto */}
-        {watched && released && (
-          <View style={styles.watchedOverlay}>
-            <SymbolView name="checkmark.circle.fill" tintColor="#fff" style={styles.watchedCheck} />
+      <View style={styles.epTop}>
+        <View style={styles.thumbWrap}>
+          {still ? (
+            <Image source={still} style={[styles.thumb, watched && styles.thumbWatched]} contentFit="cover" transition={150} />
+          ) : (
+            <View style={[styles.thumb, styles.thumbEmpty]} />
+          )}
+          {/* Play centrado y grande: deja claro que tocar reproduce. */}
+          <View style={styles.playCenter} pointerEvents="none">
+            <View style={styles.playBadge}>
+              <SymbolView name={released ? 'play.fill' : 'clock'} tintColor="#fff" style={styles.playBadgeIcon} />
+            </View>
           </View>
-        )}
-        <View style={styles.playBadge}>
-          <SymbolView
-            name={released ? 'play.fill' : 'clock'}
-            tintColor="#fff"
-            style={styles.playBadgeIcon}
-          />
+          {/* Hasta dónde se vio. Solo en los empezados y no terminados: al pasar
+              del 92% el episodio se marca como visto. */}
+          {progress > 0 && !watched && (
+            <View style={styles.progressTrack}>
+              <View style={[styles.progressFill, { width: `${Math.round(progress * 100)}%` }]} />
+            </View>
+          )}
         </View>
-        {/* Hasta dónde se vio. Solo en los empezados y no terminados: al pasar
-            del 92% el episodio se marca como visto y muestra el check. */}
-        {progress > 0 && !watched && (
-          <View style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: `${Math.round(progress * 100)}%` }]} />
-          </View>
-        )}
-      </View>
 
-      <View style={styles.epInfo}>
-        <Text
-          style={[styles.epTitle, watched && styles.epTitleWatched]}
-          numberOfLines={1}
-        >
-          {ep.episode_number}. {ep.name}
-        </Text>
-        {!released ? (
-          <Text style={styles.epSoon}>Próximamente</Text>
-        ) : ep.overview ? (
-          <Text style={styles.epOverview} numberOfLines={2}>
-            {ep.overview}
+        <View style={styles.epInfo}>
+          {/* Etiqueta solo en el episodio para retomar; en el resto el número va
+              en el título y no hace falta otra línea. */}
+          {next && <Text style={[styles.epKicker, styles.nextLabel]}>{next.toUpperCase()}</Text>}
+          <Text style={[styles.epTitle, watched && styles.epTitleWatched]} numberOfLines={2}>
+            {ep.episode_number}. {ep.name}
           </Text>
-        ) : null}
-      </View>
+          {/* Duración (o fecha, si no salió): saber si son 22 o 58 minutos
+              decide si "uno más" entra antes de dormir. */}
+          <Text style={styles.epMeta} numberOfLines={1}>
+            {!released
+              ? soonLabel(ep.air_date)
+              : remaining
+                ? `Quedan ${remaining} min`
+                : ep.runtime
+                  ? `${ep.runtime} min`
+                  : ''}
+          </Text>
+        </View>
 
-      {/* Descarga + marcar visto */}
-      {released && (
-        <View style={styles.rowActions}>
+        {released && (
+          <View style={styles.rowActions}>
           <DownloadButton
             id={Number(tvId)}
             media_type="tv"
@@ -236,104 +275,88 @@ function EpisodeRow({
             season={season}
             episode={ep.episode_number}
             episodeTitle={ep.name}
-            size={22}
+            size={24}
             tintColor={colors.textDim}
           />
+          {/* Visto: solo ícono (check), sin texto. Relleno en verde = visto. */}
           <Touchable
             scaleTo={0.85}
             haptic="selection"
-            style={styles.markBtn}
             onPress={onToggleWatched}
             hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel={watched ? 'Desmarcar como visto' : 'Marcar como visto'}
           >
             <SymbolView
-              name={watched ? 'checkmark.circle.fill' : 'circle'}
+              name={watched ? 'checkmark.circle.fill' : 'checkmark.circle'}
               tintColor={watched ? colors.success : colors.textMuted}
-              style={styles.markIcon}
+              style={styles.watchedIcon}
             />
           </Touchable>
-        </View>
-      )}
+          </View>
+        )}
+      </View>
+
+
     </Touchable>
   )
 }
 
+const MONTHS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic']
+// "Disponible el 12 mar" en vez de un "Próximamente" sin fecha.
+function soonLabel(date: string | null) {
+  if (!date) return 'Próximamente'
+  const [, m, d] = date.split('-').map(Number)
+  if (!m || !d) return 'Próximamente'
+  return `Disponible el ${d} ${MONTHS[m - 1]}`
+}
+
 const styles = StyleSheet.create({
   wrap: { marginTop: 24 },
-  seasonBar: { gap: 8, paddingBottom: 16 },
-  seasonChip: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: colors.surface,
-  },
-  seasonChipActive: { backgroundColor: '#fff' },
-  seasonText: { color: colors.textDim, fontSize: 14, fontWeight: '600' },
-  seasonTextActive: { color: '#000' },
-  markSeasonBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingVertical: 10,
-    marginBottom: 8,
-  },
-  markSeasonIcon: { width: 20, height: 20 },
-  markSeasonText: { color: colors.text, fontSize: 14, fontWeight: '600' },
+  // La tira va de borde a borde de la pantalla: una pastilla que se corta
+  // contra el borde se lee como "hay más, deslizá" (como en Apple TV).
+  seasonHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  summary: { color: colors.textMuted, fontSize: 13, fontWeight: '500', marginTop: 10, marginBottom: 14 },
+  markAll: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  markAllIcon: { width: 16, height: 16 },
+  markAllText: { color: colors.textDim, fontSize: 13, fontWeight: '600' },
+  markAllTextOn: { color: colors.success },
   spinner: { marginVertical: 30 },
-  epRow: { flexDirection: 'row', marginBottom: 18, gap: 12, alignItems: 'center' },
+  epRow: { padding: 10, marginHorizontal: -10, marginBottom: 4, borderRadius: 18, borderCurve: 'continuous' },
+  // El episodio para retomar va sobre una superficie: se encuentra de un vistazo.
+  epRowNext: { backgroundColor: colors.surface },
   epRowSoon: { opacity: 0.5 },
+  epTop: { flexDirection: 'row', alignItems: 'center', gap: 14 },
   thumbWrap: { position: 'relative' },
-  thumb: { width: 130, height: 74, borderRadius: 8, backgroundColor: colors.surface },
+  thumb: { width: 156, height: 88, borderRadius: 12, backgroundColor: colors.surface },
+  thumbWatched: { opacity: 0.55 },
   thumbEmpty: { backgroundColor: colors.surface },
+  playCenter: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
+  playBadge: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.85)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  playBadgeIcon: { width: 13, height: 13, marginLeft: 2 },
   progressTrack: {
-    position: 'absolute', left: 0, right: 0, bottom: 0, height: 3,
-    backgroundColor: colors.textFaint,
-    borderBottomLeftRadius: 8, borderBottomRightRadius: 8, overflow: 'hidden',
+    position: 'absolute', left: 8, right: 8, bottom: 7, height: 3, borderRadius: 1.5,
+    backgroundColor: 'rgba(255,255,255,0.3)', overflow: 'hidden',
   },
   progressFill: { height: '100%', backgroundColor: '#fff' },
-  watchedOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    borderRadius: 8,
-    backgroundColor: 'rgba(0,0,0,0.45)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  watchedCheck: { width: 26, height: 26 },
-  playBadge: {
-    position: 'absolute',
-    bottom: 6,
-    left: 6,
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  playBadgeIcon: { width: 10, height: 10 },
-  epInfo: { flex: 1, justifyContent: 'center' },
-  epTitle: { color: '#fff', fontSize: 15, fontWeight: '600' },
-  epTitleWatched: { color: colors.textMuted },
-  epOverview: {
-    color: colors.textMuted,
-    fontSize: 13,
-    lineHeight: 18,
-    marginTop: 4,
-  },
-  epSoon: {
-    color: colors.textMuted,
-    fontSize: 13,
-    fontWeight: '600',
-    marginTop: 4,
-  },
-  rowActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  markBtn: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  markIcon: { width: 24, height: 24 },
+  epInfo: { flex: 1, justifyContent: 'center', gap: 3 },
+  epKicker: { color: colors.textMuted, fontSize: 11, fontWeight: '700', letterSpacing: 0.6 },
+  // Sin color de acento: lo destaca el fondo de la fila, no la etiqueta.
+  nextLabel: { color: colors.textDim },
+  epTitle: { color: '#fff', fontSize: 16, fontWeight: '600', lineHeight: 20 },
+  epTitleWatched: { color: colors.textDim },
+  epMeta: { color: colors.textDim, fontSize: 13, fontWeight: '500' },
+  // En columna y no en fila: con la miniatura grande, dos íconos lado a lado
+  // le dejaban al título menos de 100 pt en un iPhone de 390.
+  rowActions: { alignItems: 'center', gap: 16 },
+  watchedIcon: { width: 24, height: 24 },
 })

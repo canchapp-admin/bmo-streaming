@@ -1,105 +1,171 @@
+import { BackButton } from '@/components/BackButton'
 import { useLocalSearchParams, useRouter } from 'expo-router'
-import {
-  View,
-  Text,
-  StyleSheet,
-  Dimensions,
-  ScrollView,
-} from 'react-native'
+import { useRef } from 'react'
+import { Animated, View, Text, StyleSheet, Dimensions } from 'react-native'
 import { Image } from 'expo-image'
 import { LinearGradient } from 'expo-linear-gradient'
-import { BlurView } from 'expo-blur'
 import { SymbolView } from 'expo-symbols'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { tmdb, backdropUrl, type MediaItem } from '@/lib/tmdb'
+import { tmdb, backdropUrl, titleOf, genreNames, type MediaItem } from '@/lib/tmdb'
 import { STUDIO_BRANDS } from '@/lib/studios'
 import { useAsync } from '@/lib/useAsync'
+import { useAuth } from '@/lib/auth'
+import { forProfile } from '@/lib/kidsFilter'
 import { PosterRow } from '@/components/PosterRow'
 import { RankedRow } from '@/components/RankedRow'
 import { FeaturedCarousel } from '@/components/FeaturedCarousel'
 import { BackdropRow } from '@/components/BackdropRow'
+import { RowHeading } from '@/components/RowHeading'
 import { Touchable } from '@/components/Touchable'
+import { BRAND_ART, LOGO_BASE } from '@/components/PlatformRow'
 import { EmptyState } from '@/components/EmptyState'
 import { SkeletonRow } from '@/components/Skeleton'
-import { rowHeading } from '@/lib/typography'
 import { colors } from '@/lib/theme'
 
 const { width } = Dimensions.get('window')
-const HERO_H = width * 0.62
+const HERO_H = Math.round(width * 1.15)
+const GENRE_PATTERNS = ['poster', 'backdrop', 'poster', 'ranked'] as const
 
+// Catálogo de una plataforma o franquicia, ambientado con su marca — como la
+// página de un canal en la app Apple TV:
+//
+//  · Hero alto con el título destacado y, encima, el LOGO real de la marca
+//    (antes era el nombre escrito en texto, igual para todas).
+//  · Todo el fondo de la pantalla lleva un resplandor del color de la marca
+//    que se apaga hacia abajo: entrar a Netflix se siente rojo, a HBO violeta.
+//  · Más contenido: además de pelis/series populares, top y recientes, filas
+//    por género de la marca ("Acción en Prime Video", …), que la API arma solo
+//    con los géneros que tienen suficientes títulos.
 export default function StudioScreen() {
   const router = useRouter()
   const { key } = useLocalSearchParams<{ key: string }>()
   const insets = useSafeAreaInsets()
+  const { profile } = useAuth()
+  const kids = !!profile?.is_kids
   const { data, loading, error, refetch } = useAsync(() => tmdb.studio(key!), [key])
+  const scrollY = useRef(new Animated.Value(0)).current
 
   const brand = STUDIO_BRANDS.find((b) => b.key === key)
-  // `primary` = tipo que luce la marca (hero/carrusel). Se cae a `type` legacy.
+  const art = key ? BRAND_ART[key] : undefined
+  // Color de ambiente: el de la marca (rojo Netflix, violeta HBO…).
+  const glow = brand?.colors[0] ?? art?.bg[0] ?? '#222222'
   const primary: 'movie' | 'tv' =
     data?.primary === 'tv' || (data?.primary == null && data?.type === 'tv') ? 'tv' : 'movie'
 
-  // Catálogo DUAL: cada array se etiqueta con su media_type correcto para que la
-  // tarjeta navegue al detalle bien (movie vs tv). Fallback a la forma legacy
-  // (popular/topRated) por si la API es vieja: ahí todo es del tipo primario.
   const tagAs = (items: MediaItem[] | undefined, k: 'movie' | 'tv'): MediaItem[] =>
-    (items ?? []).map((i) => ({ ...i, media_type: k }))
+    forProfile((items ?? []).map((i) => ({ ...i, media_type: k })), kids)
   const movies = tagAs(data?.movies ?? (primary === 'movie' ? data?.popular : []), 'movie')
   const moviesTop = tagAs(data?.moviesTop ?? (primary === 'movie' ? data?.topRated : []), 'movie')
   const series = tagAs(data?.series ?? (primary === 'tv' ? data?.popular : []), 'tv')
   const seriesTop = tagAs(data?.seriesTop ?? (primary === 'tv' ? data?.topRated : []), 'tv')
   const recent = tagAs(data?.recent, primary)
+  const genres = (data?.genres ?? [])
+    .map((g) => ({ ...g, results: tagAs(g.results, g.type) }))
+    .filter((g) => g.results.length >= 6)
 
-  const brandName = data?.name ?? brand?.name ?? key
+  const brandName = data?.name ?? brand?.name ?? key ?? ''
 
-  // Hero + carrusel salen del tipo primario; el top también.
   const primaryPop = primary === 'movie' ? movies : series
   const primaryTop = primary === 'movie' ? moviesTop : seriesTop
-  const heroItem = primaryPop[0]
+  const secondaryPop = primary === 'movie' ? series : movies
+  const secondaryTop = primary === 'movie' ? seriesTop : moviesTop
+  const heroItem = primaryPop.find((i) => i.backdrop_path)
   const heroUrl = backdropUrl(heroItem?.backdrop_path ?? data?.hero ?? null, 'w1280')
 
   const carouselItems = primaryPop
-    .slice(1)
-    .filter((i) => i.backdrop_path && i.overview)
+    .filter((i) => i.id !== heroItem?.id && i.backdrop_path && i.overview)
     .slice(0, 6)
   const usedIds = new Set<number>([heroItem?.id, ...carouselItems.map((i) => i.id)].filter(Boolean) as number[])
-  // El tipo primario ya gastó hero+carrusel; quítalos de su fila. El secundario
-  // se muestra completo.
-  const moviesRow = primary === 'movie' ? movies.filter((i) => !usedIds.has(i.id)) : movies
-  const seriesRow = primary === 'tv' ? series.filter((i) => !usedIds.has(i.id)) : series
+  const primaryRow = primaryPop.filter((i) => !usedIds.has(i.id))
+  const label = (t: 'movie' | 'tv') => (t === 'movie' ? 'Películas' : 'Series')
+
+  const openHero = () =>
+    heroItem && router.push(`/title/${heroItem.media_type === 'tv' ? 'tv' : 'movie'}/${heroItem.id}` as never)
+
+  // Parallax suave del hero y franja oscura arriba al bajar (detrás del botón
+  // de volver y la hora).
+  const heroShift = scrollY.interpolate({ inputRange: [-200, 0, HERO_H], outputRange: [-60, 0, HERO_H * 0.35], extrapolate: 'clamp' })
+  const edgeOpacity = scrollY.interpolate({ inputRange: [HERO_H - 160, HERO_H - 60], outputRange: [0, 1], extrapolate: 'clamp' })
 
   return (
     <View style={styles.container}>
-      <ScrollView
+      <Animated.ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: 60 }}
+        contentContainerStyle={{ paddingBottom: 80 }}
+        scrollEventThrottle={16}
+        onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: true })}
       >
-        {/* ── Hero con identidad de marca ── */}
-        <View style={{ height: HERO_H + insets.top }}>
-          {heroUrl ? (
-            <Image
-              source={heroUrl}
-              style={StyleSheet.absoluteFill}
-              contentFit="cover"
-              transition={400}
-            />
-          ) : (
-            <View style={[StyleSheet.absoluteFill, styles.heroPlaceholder]} />
-          )}
-          {/* Tinte del color de la marca sobre el backdrop */}
+        {/* ── Resplandor de la marca: va por detrás de todo y se apaga hacia
+            abajo, así las primeras filas también quedan "teñidas". ── */}
+        <LinearGradient
+          colors={[`${glow}66`, `${glow}22`, 'transparent']}
+          locations={[0, 0.45, 1]}
+          style={[styles.ambient, { top: HERO_H - 120 }]}
+          pointerEvents="none"
+        />
+
+        {/* ── Hero ── */}
+        <View style={{ height: HERO_H }}>
+          <Animated.View style={[StyleSheet.absoluteFill, { transform: [{ translateY: heroShift }] }]}>
+            {heroUrl ? (
+              <Image source={heroUrl} style={StyleSheet.absoluteFill} contentFit="cover" transition={400} />
+            ) : (
+              <View style={[StyleSheet.absoluteFill, { backgroundColor: glow }]} />
+            )}
+          </Animated.View>
           <LinearGradient
-            colors={[`${(brand?.colors[0] ?? '#000')}CC`, 'transparent', 'rgba(0,0,0,0.98)']}
-            locations={[0, 0.45, 1]}
+            colors={[`${glow}AA`, 'transparent']}
+            locations={[0, 0.4]}
             style={StyleSheet.absoluteFill}
           />
-          <View style={[styles.heroContent, { bottom: 22 }]}>
-            <Text style={styles.heroKicker}>Catálogo</Text>
-            <Text style={styles.heroTitle}>{brandName}</Text>
+          <LinearGradient
+            colors={['transparent', `${glow}55`, '#000']}
+            locations={[0.35, 0.75, 1]}
+            style={StyleSheet.absoluteFill}
+          />
+
+          {/* Logo de la marca arriba, centrado — la "firma" del canal. */}
+          <View style={[styles.brandMark, { top: insets.top + 4 }]} pointerEvents="none">
+            {art ? (
+              <Image
+                source={LOGO_BASE + art.logo}
+                style={styles.brandLogo}
+                contentFit="contain"
+                // Sobre la foto, un logo oscuro (Illumination) se pierde: va en blanco.
+                tintColor={art.tint === '#111' ? '#fff' : art.tint}
+                cachePolicy="memory-disk"
+                transition={200}
+                accessibilityLabel={brandName}
+              />
+            ) : (
+              <Text style={styles.brandText} numberOfLines={1}>{brandName}</Text>
+            )}
           </View>
+
+          {/* Título destacado abajo, con su botón. */}
+          {heroItem && (
+            <View style={styles.heroContent}>
+              <Text style={styles.heroKicker}>Destacado en {brandName}</Text>
+              <Text style={styles.heroTitle} numberOfLines={2}>{titleOf(heroItem)}</Text>
+              {!!heroItem.genre_ids?.length && (
+                <Text style={styles.heroMeta} numberOfLines={1}>
+                  {[label(heroItem.media_type === 'tv' ? 'tv' : 'movie').replace(/s$/, ''), ...genreNames(heroItem.genre_ids).slice(0, 2)].join(' · ')}
+                </Text>
+              )}
+              <Touchable scaleTo={0.96} haptic="light" onPress={openHero} accessibilityRole="button" accessibilityLabel={`Ver ${titleOf(heroItem)}`}>
+                <View style={styles.heroBtn}>
+                  <SymbolView name="info.circle.fill" tintColor="#000" style={styles.heroBtnIcon} />
+                  <Text style={styles.heroBtnText}>Ver ficha</Text>
+                </View>
+              </Touchable>
+            </View>
+          )}
         </View>
 
         {/* ── Contenido ── */}
         {loading ? (
           <View style={styles.skeletonRows}>
+            <SkeletonRow />
             <SkeletonRow />
             <SkeletonRow />
           </View>
@@ -114,91 +180,72 @@ export default function StudioScreen() {
           </View>
         ) : (
           <View style={styles.sections}>
+            {primaryRow.length > 0 && (
+              <PosterRow title={`${label(primary)} populares`} items={primaryRow} size="lg" />
+            )}
+            {primaryTop.length > 0 && (
+              <RankedRow title={`Top 10 en ${brandName}`} items={primaryTop.slice(0, 10)} />
+            )}
             {carouselItems.length > 0 && (
               <View style={styles.section}>
-                <Text style={styles.sectionLabel}>Destacado</Text>
+                <RowHeading title="Imperdibles" />
                 <FeaturedCarousel items={carouselItems} />
               </View>
             )}
-            {/* Filas de pelis y series — la del tipo primario va primero. */}
-            {primary === 'tv' ? (
-              <>
-                {seriesRow.length > 0 && <PosterRow title="Series" items={seriesRow} />}
-                {moviesRow.length > 0 && <PosterRow title="Películas" items={moviesRow} />}
-              </>
-            ) : (
-              <>
-                {moviesRow.length > 0 && <PosterRow title="Películas" items={moviesRow} />}
-                {seriesRow.length > 0 && <PosterRow title="Series" items={seriesRow} />}
-              </>
-            )}
-            {primaryTop.length > 0 && (
-              <RankedRow title="Top 10" items={primaryTop.slice(0, 10)} />
-            )}
-            {recent.length > 0 && (
-              <BackdropRow title="Recién llegados" items={recent} />
+            {secondaryPop.length > 0 && <PosterRow title={label(primary === 'movie' ? 'tv' : 'movie')} items={secondaryPop} />}
+            {recent.length > 0 && <BackdropRow title="Recién llegados" items={recent} size="lg" />}
+            {genres.map((g, i) => {
+              const kind = GENRE_PATTERNS[i % GENRE_PATTERNS.length]
+              if (kind === 'backdrop') return <BackdropRow key={g.id} title={g.name} items={g.results} />
+              if (kind === 'ranked') return <RankedRow key={g.id} title={g.name} items={g.results.slice(0, 10)} />
+              return <PosterRow key={g.id} title={g.name} items={g.results} />
+            })}
+            {secondaryTop.length > 0 && (
+              <PosterRow
+                title={`${label(primary === 'movie' ? 'tv' : 'movie')} mejor valoradas`}
+                items={secondaryTop}
+              />
             )}
           </View>
         )}
-      </ScrollView>
+      </Animated.ScrollView>
 
-      {/* ── Botón volver liquid glass ── */}
-      <Touchable
-        scaleTo={0.88}
-        haptic="light"
-        style={[styles.backBtn, { top: insets.top + 10 }]}
-        onPress={() => router.back()}
-        hitSlop={10}
-      >
-        <BlurView intensity={55} tint="dark" style={styles.blurWrap}>
-          <SymbolView name="chevron.left" tintColor="#fff" style={styles.backIcon} />
-        </BlurView>
-      </Touchable>
+      {/* Franja superior al bajar: el botón de volver y la hora sobre negro. */}
+      <Animated.View pointerEvents="none" style={[styles.topEdge, { height: insets.top + 60, opacity: edgeOpacity }]}>
+        <LinearGradient colors={['rgba(0,0,0,0.95)', 'rgba(0,0,0,0.6)', 'transparent']} style={StyleSheet.absoluteFill} />
+      </Animated.View>
+
+      <BackButton style={[styles.backBtn, { top: insets.top + 6 }]} />
     </View>
   )
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000' },
-  heroPlaceholder: { backgroundColor: colors.surface },
-  heroContent: { position: 'absolute', left: 18, right: 18 },
+  ambient: { position: 'absolute', left: 0, right: 0, height: 900 },
+  brandMark: { position: 'absolute', left: 72, right: 72, height: 44, alignItems: 'center', justifyContent: 'center' },
+  brandLogo: { width: '100%', height: 34 },
+  brandText: { color: '#fff', fontSize: 22, fontWeight: '900', letterSpacing: -0.5 },
+  heroContent: { position: 'absolute', left: 20, right: 20, bottom: 24 },
   heroKicker: {
-    color: colors.textDim,
-    fontSize: 13,
-    fontWeight: '700',
-    letterSpacing: 1.5,
-    textTransform: 'uppercase',
-    marginBottom: 4,
-    textShadowColor: 'rgba(0,0,0,0.5)',
-    textShadowRadius: 8,
+    color: 'rgba(255,255,255,0.75)', fontSize: 12, fontWeight: '700', letterSpacing: 1.2,
+    textTransform: 'uppercase', marginBottom: 6,
   },
   heroTitle: {
-    color: '#fff',
-    fontSize: 42,
-    fontWeight: '900',
-    letterSpacing: -1.5,
-    textShadowColor: 'rgba(0,0,0,0.5)',
-    textShadowRadius: 12,
+    color: '#fff', fontSize: 34, fontWeight: '900', letterSpacing: -1,
+    textShadowColor: 'rgba(0,0,0,0.5)', textShadowRadius: 12,
   },
-  sections: { paddingTop: 20 },
-  section: { marginBottom: 24 },
-  sectionLabel: {
-    ...rowHeading,
-    marginBottom: 12,
-    paddingHorizontal: 20,
+  heroMeta: { color: colors.textDim, fontSize: 14, fontWeight: '600', marginTop: 6 },
+  heroBtn: {
+    marginTop: 16, alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: '#fff', height: 46, paddingHorizontal: 22, borderRadius: 23,
   },
+  heroBtnIcon: { width: 18, height: 18 },
+  heroBtnText: { color: '#000', fontSize: 16, fontWeight: '700' },
+  sections: { paddingTop: 12 },
+  section: { marginBottom: 28 },
   skeletonRows: { paddingTop: 20, gap: 28 },
   errorBox: { paddingTop: 60, alignItems: 'center' },
-  backBtn: {
-    position: 'absolute',
-    left: 16,
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    overflow: 'hidden',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.textFaint,
-  },
-  blurWrap: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  backIcon: { width: 15, height: 15 },
+  topEdge: { position: 'absolute', top: 0, left: 0, right: 0 },
+  backBtn: { position: 'absolute', left: 16, zIndex: 10 },
 })

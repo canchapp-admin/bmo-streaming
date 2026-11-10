@@ -33,6 +33,8 @@ const STUDIOS: Record<
   // Peacock es sobre todo catálogo de EE.UU.: sin la región US queda casi vacío
   // (en MX su contenido se reparte entre otras plataformas).
   peacock: { name: 'Peacock', primary: 'tv', providerId: 386 },
+  // 2303 = Paramount Plus Premium: el 531 histórico quedó casi vacío en US.
+  paramountplus: { name: 'Paramount+', primary: 'tv', providerId: 2303 },
   // Franquicias con pelis Y series (Marvel Studios / DC / Lucasfilm).
   marvel: { name: 'Marvel', primary: 'movie', movieCompanies: [420], tvCompanies: [420] },
   dc: { name: 'DC', primary: 'movie', movieCompanies: [429], tvCompanies: [429] },
@@ -43,7 +45,30 @@ const STUDIOS: Record<
   warner: { name: 'Warner Bros.', primary: 'movie', movieCompanies: [174] },
   universal: { name: 'Universal', primary: 'movie', movieCompanies: [33] },
   dreamworks: { name: 'DreamWorks', primary: 'movie', movieCompanies: [521] },
+  // Franquicias del Home ("Franquicias"). IDs y conteos verificados contra TMDB.
+  disneyanimation: { name: 'Disney Animation', primary: 'movie', movieCompanies: [6125] },
+  illumination: { name: 'Illumination', primary: 'movie', movieCompanies: [6704] },
+  ghibli: { name: 'Studio Ghibli', primary: 'movie', movieCompanies: [10342] },
+  blumhouse: { name: 'Blumhouse', primary: 'movie', movieCompanies: [3172] },
 }
+
+// Géneros que se prueban en el catálogo de cada marca, según su tipo
+// principal. Solo quedan los que traen suficientes títulos de esa marca (una
+// fila de 3 pósters se ve vacía).
+const STUDIO_GENRES: Record<'movie' | 'tv', [string, number][]> = {
+  movie: [
+    ['Acción', 28], ['Aventura', 12], ['Comedia', 35], ['Animación', 16],
+    ['Ciencia ficción', 878], ['Drama', 18], ['Terror', 27], ['Familia', 10751],
+    ['Fantasía', 14], ['Suspenso', 53], ['Romance', 10749], ['Crimen', 80],
+  ],
+  tv: [
+    ['Drama', 18], ['Comedia', 35], ['Crimen', 80], ['Acción y aventura', 10759],
+    ['Ciencia ficción y fantasía', 10765], ['Misterio', 9648], ['Animación', 16],
+    ['Documentales', 99], ['Reality', 10764], ['Familia', 10751],
+  ],
+}
+const STUDIO_GENRE_MIN = 8
+const STUDIO_GENRE_MAX = 7
 
 async function safeGenres(
   genres: [string, number][],
@@ -216,7 +241,7 @@ export const tmdbRoutes = new Elysia({ prefix: '/tmdb' })
           return {
             name: params.key, type: 'movie', primary: 'movie', hero: null,
             popular: [], topRated: [], recent: [],
-            movies: [], moviesTop: [], series: [], seriesTop: [],
+            movies: [], moviesTop: [], series: [], seriesTop: [], genres: [],
           }
         }
         const wantMovies = !!(s.providerId || s.movieCompanies?.length)
@@ -241,6 +266,30 @@ export const tmdbRoutes = new Elysia({ prefix: '/tmdb' })
           wantSeries ? brand('tv', 'vote_average.desc') : empty,
           brand(s.primary, recentSort),
         ])
+        // Filas por género del tipo principal, para que el catálogo de la
+        // marca tenga de dónde explorar y no se acabe en cuatro filas.
+        const genreSettled = await Promise.allSettled(
+          STUDIO_GENRES[s.primary].map(([, id]) =>
+            tmdbService.discoverBrand({
+              type: s.primary,
+              sortBy: 'popularity.desc',
+              providerId: s.providerId,
+              companies: s.primary === 'movie' ? s.movieCompanies : s.tvCompanies,
+              genre: id,
+            })
+          )
+        )
+        const genres = STUDIO_GENRES[s.primary]
+          .map(([name, id], i) => ({
+            name,
+            id,
+            type: s.primary,
+            results: genreSettled[i].status === 'fulfilled'
+              ? (genreSettled[i] as PromiseFulfilledResult<any[]>).value
+              : [],
+          }))
+          .filter((g) => g.results.length >= STUDIO_GENRE_MIN)
+          .slice(0, STUDIO_GENRE_MAX)
         const val = (i: number): any[] =>
           settled[i].status === 'fulfilled' ? (settled[i] as PromiseFulfilledResult<any[]>).value : []
         const movies = val(0), moviesTop = val(1), series = val(2), seriesTop = val(3), recent = val(4)
@@ -255,6 +304,7 @@ export const tmdbRoutes = new Elysia({ prefix: '/tmdb' })
           hero,
           // Nuevo catálogo dual (cliente móvil).
           movies, moviesTop, series, seriesTop,
+          genres,
           // Legacy (apps/tv y clientes viejos leen esta forma tipo-género).
           type: s.primary,
           popular: primaryPop,

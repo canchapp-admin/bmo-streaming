@@ -176,6 +176,8 @@ export type StudioDetail = GenreDetail & {
   moviesTop?: MediaItem[]
   series?: MediaItem[]
   seriesTop?: MediaItem[]
+  // Filas por género dentro de la marca (API nueva; una vieja no lo trae).
+  genres?: { name: string; id: number; type: 'movie' | 'tv'; results: MediaItem[] }[]
 }
 
 export type GenreRow = { name: string; results: MediaItem[] }

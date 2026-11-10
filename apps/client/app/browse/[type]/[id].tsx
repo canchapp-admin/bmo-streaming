@@ -1,3 +1,4 @@
+import { BackButton } from '@/components/BackButton'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import {
   View,
@@ -8,8 +9,6 @@ import {
 } from 'react-native'
 import { Image } from 'expo-image'
 import { LinearGradient } from 'expo-linear-gradient'
-import { BlurView } from 'expo-blur'
-import { SymbolView } from 'expo-symbols'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { tmdb, backdropUrl, type MediaItem } from '@/lib/tmdb'
 import { useAsync } from '@/lib/useAsync'
@@ -135,17 +134,7 @@ export default function BrowseScreen() {
       </ScrollView>
 
       {/* ── Liquid glass back button ── */}
-      <Touchable
-        scaleTo={0.88}
-        haptic="light"
-        style={[styles.backBtn, { top: insets.top + 10 }]}
-        onPress={() => router.back()}
-        hitSlop={10}
-      >
-        <BlurView intensity={55} tint="dark" style={styles.blurWrap}>
-          <SymbolView name="chevron.left" tintColor="#fff" style={styles.backIcon} />
-        </BlurView>
-      </Touchable>
+      <BackButton style={[styles.backBtn, { top: insets.top + 6 }]} />
     </View>
   )
 }
@@ -173,21 +162,6 @@ const styles = StyleSheet.create({
   },
   skeletonRows: { paddingTop: 20, gap: 28 },
   errorBox: { paddingTop: 60, alignItems: 'center' },
-  // Liquid glass button
-  backBtn: {
-    position: 'absolute',
-    left: 16,
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    overflow: 'hidden',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.textFaint,
-  },
-  blurWrap: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  backIcon: { width: 15, height: 15 },
+  // El vidrio y el tamaño los pone BackButton; acá solo la posición.
+  backBtn: { position: 'absolute', left: 16, zIndex: 10 },
 })

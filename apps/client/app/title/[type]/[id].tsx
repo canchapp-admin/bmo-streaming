@@ -1,3 +1,5 @@
+import { Glass } from '@/components/Glass'
+import { BackButton, BACK_SIZE } from '@/components/BackButton'
 import * as Haptics from 'expo-haptics'
 import { useLocalSearchParams, Stack, useRouter, useFocusEffect } from 'expo-router'
 import { useCallback, useEffect, useState } from 'react'
@@ -6,6 +8,8 @@ import {
   Text,
   StyleSheet,
   Dimensions,
+  Pressable,
+  LayoutAnimation,
 } from 'react-native'
 import Animated, {
   useAnimatedRef,
@@ -236,15 +240,7 @@ export default function TitleScreen() {
       </Animated.View>
 
       <View style={styles.headerRow}>
-        <Touchable
-          scaleTo={0.9}
-          haptic="light"
-          style={styles.backButton}
-          onPress={() => router.back()}
-        >
-          <BlurView intensity={40} tint="dark" style={StyleSheet.absoluteFill} />
-          <SymbolView name="chevron.left" tintColor="#fff" style={styles.backIcon} />
-        </Touchable>
+        <BackButton />
 
         <Animated.Text style={[styles.headerTitle, headerTitleStyle]} numberOfLines={1}>
           {data ? titleOf(data) : ''}
@@ -328,8 +324,14 @@ export default function TitleScreen() {
                 pointerEvents="none"
               />
               <Animated.View style={[styles.heroContent, heroContentStyle]} pointerEvents="none">
+                {/* Logo en blanco con sombra suave, como la app Apple TV: los
+                    logos vienen en el color de la marca (azul, rojo…) y sobre
+                    un backdrop del mismo tono no se leían. En blanco se leen
+                    sobre cualquier imagen. */}
                 {logo ? (
-                  <Image source={logo} style={styles.logo} contentFit="contain" transition={300} />
+                  <View style={styles.logoShadow}>
+                    <Image source={logo} style={styles.logo} contentFit="contain" tintColor="#fff" transition={300} />
+                  </View>
                 ) : (
                   <Text style={styles.title} numberOfLines={2}>
                     {titleOf(data)}
@@ -350,6 +352,13 @@ export default function TitleScreen() {
                   ) : null}
                   {data.runtime ? <Text style={styles.meta}>{data.runtime} min</Text> : null}
                 </View>
+                {/* Géneros arriba de los botones: ayudan a decidir antes de
+                    tocar Reproducir, igual que en el hero del Inicio. */}
+                {data.genres?.length ? (
+                  <Text style={styles.heroGenres} numberOfLines={1}>
+                    {data.genres.slice(0, 3).map((g) => g.name).join('  ·  ')}
+                  </Text>
+                ) : null}
               </Animated.View>
             </>
           )}
@@ -392,18 +401,20 @@ export default function TitleScreen() {
               normal, no un Touchable.) */}
           <View style={styles.secondaryRow}>
             <View style={styles.secondarySlot}>
-              <Touchable scaleTo={0.95} style={styles.secondaryBtn} onPress={onToggleList}>
-                <SymbolView
-                  name={inList ? 'checkmark' : 'plus'}
-                  tintColor="#fff"
-                  style={styles.listIcon}
-                />
-                <Text style={styles.listText} numberOfLines={1}>Mi Lista</Text>
+              <Touchable scaleTo={0.95} onPress={onToggleList}>
+                <Glass radius={14} interactive style={styles.secondaryBtn}>
+                  <SymbolView
+                    name={inList ? 'checkmark' : 'plus'}
+                    tintColor="#fff"
+                    style={styles.listIcon}
+                  />
+                  <Text style={styles.listText} numberOfLines={1}>Mi Lista</Text>
+                </Glass>
               </Touchable>
             </View>
             {!isTv && data && isReleased(data.release_date) && (
               <View style={styles.secondarySlot}>
-                <View style={styles.secondaryBtn}>
+                <Glass radius={14} style={styles.secondaryBtn}>
                   <DownloadButton
                     id={Number(id)}
                     media_type="movie"
@@ -413,7 +424,7 @@ export default function TitleScreen() {
                     size={19}
                   />
                   <Text style={styles.listText} numberOfLines={1}>Descargar</Text>
-                </View>
+                </Glass>
               </View>
             )}
             {trailer && (
@@ -421,9 +432,14 @@ export default function TitleScreen() {
                 <Touchable
                   scaleTo={0.95}
                   haptic="light"
-                  style={[styles.secondaryBtn, trailerOpen && styles.secondaryBtnActive]}
                   onPress={() => (trailerOpen ? setTrailerOpen(false) : openTrailer())}
                 >
+                  <Glass
+                    radius={14}
+                    interactive
+                    tint={trailerOpen ? colors.accent : undefined}
+                    style={StyleSheet.flatten([styles.secondaryBtn, trailerOpen && styles.secondaryBtnActive])}
+                  >
                   <SymbolView
                     name={trailerOpen ? 'stop.fill' : 'play.rectangle'}
                     tintColor={trailerOpen ? colors.onAccent : '#fff'}
@@ -435,18 +451,13 @@ export default function TitleScreen() {
                   >
                     Tráiler
                   </Text>
+                  </Glass>
                 </Touchable>
               </View>
             )}
           </View>
 
-          {data.genres?.length ? (
-            <Text style={styles.genres}>
-              {data.genres.map((g) => g.name).join(' · ')}
-            </Text>
-          ) : null}
-
-          <Text style={styles.overview}>{data.overview || 'Sin sinopsis.'}</Text>
+          <Overview text={data.overview || 'Sin sinopsis.'} />
 
           {isTv && data.seasons?.length ? (
             <SeasonEpisodes
@@ -455,6 +466,7 @@ export default function TitleScreen() {
               seasons={data.seasons}
               poster={data.poster_path}
               backdrop={data.backdrop_path}
+              nextUp={resume}
             />
           ) : null}
 
@@ -472,6 +484,33 @@ export default function TitleScreen() {
 
       {header}
     </>
+  )
+}
+
+// Sinopsis plegada en 4 líneas con "Más", como en la App Store: completa
+// ocupaba media pantalla y empujaba el reparto fuera de la vista.
+const OVERVIEW_LINES = 4
+function Overview({ text }: { text: string }) {
+  const [open, setOpen] = useState(false)
+  // Aproximación por largo: onTextLayout con numberOfLines no dice de forma
+  // fiable si hubo recorte. ~45 caracteres por línea en un iPhone.
+  const long = text.length > OVERVIEW_LINES * 45
+  if (!long) return <Text style={[styles.overview, styles.overviewWrap]}>{text}</Text>
+  return (
+    <Pressable
+      style={styles.overviewWrap}
+      onPress={() => {
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut)
+        setOpen((o) => !o)
+      }}
+      accessibilityRole="button"
+      accessibilityHint={open ? 'Muestra menos' : 'Muestra la sinopsis completa'}
+    >
+      <Text style={styles.overview} numberOfLines={open ? undefined : OVERVIEW_LINES}>
+        {text}
+      </Text>
+      <Text style={styles.more}>{open ? 'Menos' : 'Más'}</Text>
+    </Pressable>
   )
 }
 
@@ -493,13 +532,20 @@ const styles = StyleSheet.create({
   heroGradient: { ...StyleSheet.absoluteFillObject },
   heroContent: {
     position: 'absolute',
-    bottom: 16,
+    bottom: 10,
     left: 0,
     right: 0,
     paddingHorizontal: 20,
     alignItems: 'center',
   },
   logo: { width: width * 0.7, height: 84 },
+  logoShadow: {
+    shadowColor: '#000',
+    shadowOpacity: 0.55,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 2 },
+  },
+  heroGenres: { color: colors.textDim, fontSize: 13, fontWeight: '500', marginTop: 8 },
 
   header: {
     position: 'absolute',
@@ -509,7 +555,7 @@ const styles = StyleSheet.create({
     zIndex: 10,
   },
   headerRow: {
-    height: 44,
+    height: 56,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -532,17 +578,7 @@ const styles = StyleSheet.create({
     letterSpacing: -0.2,
     marginHorizontal: 8,
   },
-  backButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    alignItems: 'center',
-    justifyContent: 'center',
-    overflow: 'hidden',
-    backgroundColor: 'rgba(0,0,0,0.25)',
-  },
-  backButtonSpacer: { width: 34, height: 34 },
-  backIcon: { width: 15, height: 15 },
+  backButtonSpacer: { width: BACK_SIZE, height: BACK_SIZE },
 
   body: { paddingHorizontal: 20, paddingTop: 4, paddingBottom: 20 },
   title: {
@@ -569,7 +605,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderRadius: 12,
     paddingVertical: 14,
-    marginTop: 20,
+    // 12 y no 20: el hero ya termina en degradado; con más aire los botones
+    // quedaban despegados del título y los datos.
+    marginTop: 12,
     gap: 8,
   },
   soonButton: {
@@ -579,7 +617,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.hairline,
     borderRadius: 12,
     paddingVertical: 14,
-    marginTop: 20,
+    marginTop: 12,
     gap: 8,
   },
   soonText: { color: colors.textDim, fontSize: 16, fontWeight: '600' },
@@ -593,10 +631,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
-    paddingVertical: 12,
+    // Alto fijo y no padding: el ícono de Descargar trae su propio margen
+    // táctil y con padding ese botón quedaba unos puntos más bajo que los otros.
+    height: 46,
     paddingHorizontal: 6,
-    borderRadius: 12,
-    backgroundColor: colors.fill,
   },
   // Con el tráiler sonando el botón queda encendido: es el mismo control que lo
   // apaga, así que tiene que leerse como "activo" y no como uno más.
@@ -606,13 +644,13 @@ const styles = StyleSheet.create({
   // pantallas de 390pt.
   listText: { color: '#fff', fontSize: 14, fontWeight: '600' },
   listTextActive: { color: colors.onAccent },
-  genres: { color: colors.textMuted, fontSize: 13, marginTop: 20 },
   overview: {
     color: colors.text,
     fontSize: 15,
     lineHeight: 22,
-    marginTop: 12,
   },
+  overviewWrap: { marginTop: 20 },
+  more: { color: '#fff', fontSize: 15, fontWeight: '700', marginTop: 4 },
   similar: { marginTop: 8, marginBottom: 24 },
   errorFill: { flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center' },
 })

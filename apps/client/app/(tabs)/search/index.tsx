@@ -1,5 +1,7 @@
 import { Stack } from 'expo-router'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useFocusEffect } from 'expo-router'
+import type { SearchBarCommands } from 'react-native-screens'
 import {
   FlatList,
   View,
@@ -13,15 +15,17 @@ import { matchStudio, type StudioBrand } from '@/lib/studios'
 import { useAsync } from '@/lib/useAsync'
 import { useDebouncedValue } from '@/lib/useDebouncedValue'
 import { PosterCard } from '@/components/PosterCard'
-import { CategoryCard } from '@/components/CategoryCard'
+import { SearchHome } from '@/components/SearchHome'
+import { useAuth } from '@/lib/auth'
+import { forProfile } from '@/lib/kidsFilter'
+import { addRecentSearch, clearRecentSearches, getRecentSearches } from '@/lib/recentSearches'
 import { PersonResultCard } from '@/components/PersonResultCard'
 import { StudioBanner } from '@/components/StudioBanner'
 import { EmptyState } from '@/components/EmptyState'
 import { colors } from '@/lib/theme'
 
 const { width } = Dimensions.get('window')
-const CAT_W = Math.floor((width - 32 - 24) / 3)
-const RES_W = CAT_W
+const RES_W = Math.floor((width - 32 - 24) / 3)
 
 export default function SearchScreen() {
   const [query, setQuery] = useState('')
@@ -30,6 +34,23 @@ export default function SearchScreen() {
   const [brand, setBrand] = useState<StudioBrand | null>(null)
   const [loading, setLoading] = useState(false)
   const { data: categories } = useAsync(() => tmdb.categories())
+  const { data: home } = useAsync(() => tmdb.home())
+  const { profile } = useAuth()
+  const kids = !!profile?.is_kids
+  const searchRef = useRef<SearchBarCommands>(null)
+
+  // Búsquedas recientes del perfil. Se guarda una búsqueda cuando "cuenta":
+  // al tocar Buscar en el teclado o al empezar a recorrer los resultados — no
+  // cada texto a medio escribir.
+  const [recent, setRecent] = useState<string[]>([])
+  useFocusEffect(useCallback(() => {
+    getRecentSearches(profile?.id).then(setRecent)
+  }, [profile?.id]))
+  const remember = (q: string) => addRecentSearch(profile?.id, q).then(setRecent)
+  function pickRecent(q: string) {
+    searchRef.current?.setText(q)
+    setQuery(q)
+  }
 
   const searching = query.trim().length >= 2
 
@@ -59,7 +80,7 @@ export default function SearchScreen() {
         if (cancelled) return
         // Títulos (con póster) por un lado; personas (actores, con foto y
         // filmografía conocida) por otro — cada uno se muestra distinto.
-        setResults(data.results.filter((r) => r.media_type !== 'person' && r.poster_path))
+        setResults(forProfile(data.results.filter((r) => r.media_type !== 'person' && r.poster_path), kids))
         setPeople(
           data.results
             .filter((r) => r.media_type === 'person' && r.profile_path)
@@ -95,12 +116,22 @@ export default function SearchScreen() {
     <>
       <Stack.Screen
         options={{
-          title: '',
+          // Título grande NATIVO de iOS: se ubica pegado a la barra de estado
+          // y se achica al centro al hacer scroll. Antes el título era un Text
+          // propio debajo de la barra de navegación vacía y quedaba un hueco
+          // enorme arriba.
+          title: 'Buscar',
+          headerLargeTitle: true,
+          headerLargeTitleShadowVisible: false,
+          headerLargeTitleStyle: { color: '#fff' },
+          headerTitleStyle: { color: '#fff' },
           headerTransparent: true,
           headerStyle: { backgroundColor: 'transparent' },
           headerSearchBarOptions: {
             placeholder: 'Películas, series, actores...',
+            ref: searchRef as never,
             onChangeText: (e: any) => setQuery(e.nativeEvent.text),
+            onSearchButtonPress: (e: any) => remember(e.nativeEvent.text),
             hideWhenScrolling: false,
             autoCapitalize: 'none',
             textColor: '#fff',
@@ -109,46 +140,53 @@ export default function SearchScreen() {
           },
         }}
       />
+      {!searching ? (
+        <SearchHome
+          recent={recent}
+          onPickRecent={pickRecent}
+          onClearRecent={() => { clearRecentSearches(profile?.id); setRecent([]) }}
+          trending={forProfile(home?.trending.results ?? [], kids)}
+          categories={categories ?? []}
+          kids={kids}
+        />
+      ) : (
       <FlatList
         style={styles.list}
         contentInsetAdjustmentBehavior="automatic"
-        data={searching ? results : (categories ?? [])}
-        keyExtractor={(item: any) =>
-          searching
-            ? `${item.media_type}-${item.id}`
-            : `${item.type}-${item.studioKey ?? item.genreId}`
-        }
+        data={results}
+        keyExtractor={(item) => `${item.media_type}-${item.id}`}
         numColumns={3}
         columnWrapperStyle={styles.col}
         contentContainerStyle={styles.content}
         keyboardDismissMode="on-drag"
+        // Empezar a recorrer los resultados = la búsqueda sirvió: se guarda.
+        onScrollBeginDrag={() => remember(query)}
         showsVerticalScrollIndicator={false}
         ListHeaderComponent={Header}
-        renderItem={({ item }: any) =>
-          searching
-            ? <PosterCard item={item} width={RES_W} />
-            : <CategoryCard cat={item} width={CAT_W} />
-        }
+        // Ancho fijo en un View propio: PosterCard va dentro de TitleMenu y el
+        // ancho no siempre llegaba — la tercera columna quedaba cortada.
+        renderItem={({ item }) => (
+          <View style={{ width: RES_W }}>
+            <PosterCard item={item} width={RES_W} />
+          </View>
+        )}
         ListEmptyComponent={
-          searching && loading
+          loading
             ? <ActivityIndicator color="#fff" style={styles.spinner} />
-            : searching
-            ? (
+            : hasExtras ? null : (
               // Si hay banner de marca o personas, no mostramos "sin resultados"
               // (el usuario sí encontró algo, solo que no títulos).
-              hasExtras ? null : (
-                <View style={styles.empty}>
-                  <EmptyState
-                    icon="magnifyingglass"
-                    title="Sin resultados"
-                    subtitle="Prueba con otro título, actor o género."
-                  />
-                </View>
-              )
+              <View style={styles.empty}>
+                <EmptyState
+                  icon="magnifyingglass"
+                  title="Sin resultados"
+                  subtitle="Prueba con otro título, actor o género."
+                />
+              </View>
             )
-            : <ActivityIndicator color="#fff" style={styles.spinner} />
         }
       />
+      )}
     </>
   )
 }

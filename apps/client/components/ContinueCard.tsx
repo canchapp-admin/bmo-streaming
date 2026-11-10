@@ -13,7 +13,7 @@ import { colors } from '@/lib/theme'
 
 const CARD_WIDTH = 300
 
-function remainingLabel(p: Progress, episodeName?: string | null) {
+export function remainingLabel(p: Progress, episodeName?: string | null) {
   const isTv = p.media_type === 'tv' && p.season
   // "Próximo a ver" (encolado al terminar el anterior): duration 0. Se dice
   // "Siguiente" y el nombre del episodio, no "Empezar": así se entiende que
@@ -35,9 +35,12 @@ function remainingLabel(p: Progress, episodeName?: string | null) {
 export function ContinueCard({
   item,
   onRemove,
+  width,
 }: {
   item: Progress
   onRemove?: () => void
+  // Ancho propio (la pantalla "Seguir viendo" las usa a todo el ancho).
+  width?: number
 }) {
   const router = useRouter()
   // Tarjeta de 300pt → ~900px en 3x: w1280 la deja nítida (w780 quedaba blando).
@@ -105,7 +108,8 @@ export function ContinueCard({
       ]}
     >
     <Touchable
-      style={styles.card}
+      // flatten: TitleMenu esparce el style como objeto (un array se rompe).
+      style={StyleSheet.flatten([styles.card, width != null && { width, height: width * 0.58, marginRight: 0 }])}
       haptic="light"
       onPressIn={() => prewarmTitle(item.id, item.media_type === 'tv', item.season, item.episode)}
       accessibilityRole="button"

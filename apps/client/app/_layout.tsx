@@ -64,6 +64,7 @@ function RootNavigator() {
         <Stack.Screen name="person/[id]" options={{ headerShown: false }} />
         <Stack.Screen name="browse/[type]/[id]" options={{ headerShown: false }} />
         <Stack.Screen name="studio/[key]" options={{ headerShown: false }} />
+        <Stack.Screen name="continue" options={{ headerShown: false }} />
         <Stack.Screen
           name="player"
           options={{

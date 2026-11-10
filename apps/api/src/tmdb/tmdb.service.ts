@@ -116,6 +116,7 @@ export const tmdbService = {
     providerId?: number
     companies?: number[]
     regions?: string[]
+    genre?: number
   }): Promise<any[]> => {
     const isDate = /release_date|air_date/.test(opts.sortBy)
     const common: TMDBParams = {
@@ -125,6 +126,7 @@ export const tmdbService = {
       // un piso bajo para no vaciar catálogos de marca chicos.
       'vote_count.gte': opts.sortBy.startsWith('vote_average') ? 100 : 20,
       with_companies: opts.companies?.length ? opts.companies.join('|') : undefined,
+      with_genres: opts.genre,
     }
     // "Recientes" sin fecha tope se llenaba de estrenos futuros sin póster.
     if (isDate) {

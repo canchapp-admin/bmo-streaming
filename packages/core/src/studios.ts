@@ -21,10 +21,15 @@ export const STUDIO_BRANDS: StudioBrand[] = [
   { key: 'dc', name: 'DC', aliases: ['dc', 'dc comics', 'dceu'], colors: ['#1D6FB8', '#0A1B3D'] },
   { key: 'pixar', name: 'Pixar', aliases: ['pixar'], colors: ['#2AA5E0', '#F2C230'] },
   { key: 'starwars', name: 'Star Wars', aliases: ['star wars', 'starwars', 'lucasfilm'], colors: ['#000000', '#3A3A00'] },
-  { key: 'paramount', name: 'Paramount', aliases: ['paramount', 'paramount+', 'paramount plus'], colors: ['#0064FF', '#00317A'] },
+  { key: 'paramount', name: 'Paramount', aliases: ['paramount', 'paramount pictures'], colors: ['#0064FF', '#00317A'] },
   { key: 'warner', name: 'Warner Bros.', aliases: ['warner', 'warner bros', 'warner brothers', 'wb'], colors: ['#123A87', '#0A1F4D'] },
   { key: 'universal', name: 'Universal', aliases: ['universal', 'universal pictures'], colors: ['#1B4B9E', '#0A244F'] },
   { key: 'dreamworks', name: 'DreamWorks', aliases: ['dreamworks', 'dream works'], colors: ['#1E6FCC', '#0B2E5C'] },
+  { key: 'paramountplus', name: 'Paramount+', aliases: ['paramount+', 'paramount plus', 'paramountplus'], colors: ['#0064FF', '#00317A'] },
+  { key: 'disneyanimation', name: 'Disney Animation', aliases: ['disney animation', 'walt disney animation', 'walt disney animation studios'], colors: ['#1B3A8C', '#0A1640'] },
+  { key: 'illumination', name: 'Illumination', aliases: ['illumination', 'minions'], colors: ['#F5C518', '#B8860B'] },
+  { key: 'ghibli', name: 'Studio Ghibli', aliases: ['ghibli', 'studio ghibli', 'estudio ghibli'], colors: ['#2E7D5B', '#123528'] },
+  { key: 'blumhouse', name: 'Blumhouse', aliases: ['blumhouse'], colors: ['#2B0A0A', '#000000'] },
 ]
 
 // Coincidencia exacta contra el query completo (no substring) — así "disney"

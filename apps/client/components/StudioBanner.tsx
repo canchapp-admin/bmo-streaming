@@ -1,35 +1,59 @@
 import { View, Text, StyleSheet } from 'react-native'
+import { Image } from 'expo-image'
 import { LinearGradient } from 'expo-linear-gradient'
 import { SymbolView } from 'expo-symbols'
 import { useRouter } from 'expo-router'
-import { type StudioBrand } from '@/lib/studios'
+import { STUDIO_BRANDS, type StudioBrand } from '@/lib/studios'
 import { Touchable } from './Touchable'
-import { colors } from '@/lib/theme'
+import { BRAND_ART, LOGO_BASE } from './PlatformRow'
 
-// Banner de marca en el buscador (Disney, HBO...) → abre el catálogo especial.
+// Banner de marca en el buscador (buscar "amazon", "disney"…) → abre su
+// catálogo. Usa el mismo arte que las tarjetas de Plataformas y Franquicias:
+// fondo de la marca y su logo real, en vez del nombre escrito a mano. Las
+// marcas sin logo cargado (Warner, Universal…) siguen con el nombre en texto.
 export function StudioBanner({ brand }: { brand: StudioBrand }) {
   const router = useRouter()
+  const art = BRAND_ART[brand.key]
+  const name = STUDIO_BRANDS.find((b) => b.key === brand.key)?.name ?? brand.name
 
   return (
     <Touchable
       scaleTo={0.98}
       haptic="light"
-      style={styles.wrap}
       onPress={() => router.push(`/studio/${brand.key}` as never)}
+      accessibilityRole="button"
+      accessibilityLabel={`Ver el catálogo de ${name}`}
     >
       <LinearGradient
-        colors={brand.colors}
+        colors={art?.bg ?? brand.colors}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
         style={styles.card}
       >
-        <View style={styles.textCol}>
-          <Text style={styles.kicker}>Catálogo especial</Text>
-          <Text style={styles.name}>{brand.name}</Text>
+        <LinearGradient
+          colors={['rgba(255,255,255,0.16)', 'transparent']}
+          locations={[0, 0.6]}
+          style={StyleSheet.absoluteFill}
+        />
+        <View style={styles.brand}>
+          {art ? (
+            <Image
+              source={LOGO_BASE + art.logo}
+              style={styles.logo}
+              contentFit="contain"
+              contentPosition="left"
+              tintColor={art.tint}
+              cachePolicy="memory-disk"
+              transition={200}
+              accessibilityIgnoresInvertColors
+            />
+          ) : (
+            <Text style={styles.name} numberOfLines={1}>{name}</Text>
+          )}
         </View>
         <View style={styles.cta}>
-          <Text style={styles.ctaText}>Ver</Text>
-          <SymbolView name="chevron.right" tintColor="#fff" style={styles.ctaIcon} />
+          <Text style={styles.ctaText}>Ver catálogo</Text>
+          <SymbolView name="chevron.right" weight="semibold" tintColor="#fff" style={styles.ctaIcon} />
         </View>
       </LinearGradient>
     </Touchable>
@@ -37,40 +61,30 @@ export function StudioBanner({ brand }: { brand: StudioBrand }) {
 }
 
 const styles = StyleSheet.create({
-  wrap: {
-    borderRadius: 18,
-    overflow: 'hidden',
-    shadowColor: '#000', shadowOpacity: 0.35, shadowRadius: 14, shadowOffset: { width: 0, height: 6 },
-  },
   card: {
+    height: 96,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 20,
+    gap: 16,
     paddingHorizontal: 20,
     borderRadius: 18,
+    borderCurve: 'continuous',
+    overflow: 'hidden',
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
+    borderColor: 'rgba(255,255,255,0.14)',
   },
-  textCol: { flex: 1 },
-  kicker: {
-    color: colors.text,
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-    marginBottom: 3,
-  },
+  brand: { flex: 1, height: 48, justifyContent: 'center' },
+  logo: { width: '100%', height: '100%' },
   name: { color: '#fff', fontSize: 26, fontWeight: '900', letterSpacing: -0.6 },
   cta: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: colors.border,
-    paddingVertical: 8,
+    backgroundColor: 'rgba(0,0,0,0.28)',
+    paddingVertical: 9,
     paddingHorizontal: 14,
     borderRadius: 20,
   },
   ctaText: { color: '#fff', fontSize: 14, fontWeight: '700' },
-  ctaIcon: { width: 11, height: 11 },
+  ctaIcon: { width: 10, height: 10 },
 })

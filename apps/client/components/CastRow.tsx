@@ -13,7 +13,7 @@ export function CastRow({ cast }: { cast: CastMember[] }) {
 
   return (
     <View style={styles.section}>
-      <Text style={styles.heading}>Reparto</Text>
+      <Text style={styles.heading} accessibilityRole="header">Reparto</Text>
       <FlatList
         horizontal
         data={people}
@@ -40,8 +40,12 @@ export function CastRow({ cast }: { cast: CastMember[] }) {
                   <Text style={styles.initials}>{item.name.charAt(0)}</Text>
                 </View>
               )}
-              <Text style={styles.name} numberOfLines={1}>{item.name}</Text>
-              <Text style={styles.character} numberOfLines={1}>{item.character}</Text>
+              {/* Nombre en hasta dos líneas: en una sola, "Anne Hathaway" quedaba
+                  en "Anne Hatha…". Debajo, el personaje en gris. */}
+              <Text style={styles.name} numberOfLines={2} maxFontSizeMultiplier={1.4}>{item.name}</Text>
+              {!!item.character && (
+                <Text style={styles.character} numberOfLines={2} maxFontSizeMultiplier={1.4}>{item.character}</Text>
+              )}
             </Touchable>
           )
         }}
@@ -57,14 +61,15 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   list: { gap: 14 },
-  person: { width: 80 },
-  photo: { width: 80, height: 80, borderRadius: 40, backgroundColor: colors.surface },
+  person: { width: 92 },
+  photo: { width: 92, height: 92, borderRadius: 46, backgroundColor: colors.surface },
   empty: { alignItems: 'center', justifyContent: 'center' },
   initials: { color: colors.textMuted, fontSize: 24, fontWeight: '700' },
-  name: { color: '#fff', fontSize: 12, fontWeight: '600', marginTop: 8, textAlign: 'center' },
+  name: { color: '#fff', fontSize: 13, fontWeight: '600', lineHeight: 16, marginTop: 8, textAlign: 'center' },
   character: {
     color: colors.textMuted,
-    fontSize: 11,
+    fontSize: 12,
+    lineHeight: 15,
     marginTop: 2,
     textAlign: 'center',
   },

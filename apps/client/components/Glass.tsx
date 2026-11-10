@@ -3,6 +3,9 @@ import { BlurView } from 'expo-blur'
 import { GlassView, isLiquidGlassAvailable } from 'expo-glass-effect'
 import { colors } from '@/lib/theme'
 
+// Ojo: GlassView no se dibuja si él o algún contenedor tiene `opacity`
+// animada o menor a 1. Para aparecerlo, animar escala o posición, no opacidad.
+//
 // Se resuelve una vez: no cambia mientras la app corre.
 const LIQUID_GLASS = isLiquidGlassAvailable()
 

@@ -9,9 +9,11 @@ import { useRowEndHaptic } from '@/lib/useRowEndHaptic'
 import { colors } from '@/lib/theme'
 import { rowVirtualization, fixedItemLayout } from './rowVirtualization'
 
-const CARD_W = 110
+// Top 10 grande, con el número gigante asomando detrás del póster: es la fila
+// que más tiene que destacarse a simple vista.
+const CARD_W = 136
 const CARD_H = CARD_W * 1.5
-const NUM_W = 36
+const NUM_W = 56
 
 function RankedCard({ item, rank }: { item: MediaItem; rank: number }) {
   const uri = posterUrl(item.poster_path, 'w500')
@@ -24,7 +26,7 @@ function RankedCard({ item, rank }: { item: MediaItem; rank: number }) {
       haptic="light"
       onPressIn={() => prewarmTitle(item.id, isTv)}
     >
-      <Text style={styles.num}>{rank}</Text>
+      <Text style={styles.num} maxFontSizeMultiplier={1} adjustsFontSizeToFit numberOfLines={1}>{rank}</Text>
       {uri ? (
         <Image source={uri} style={styles.poster} contentFit="cover" transition={200} cachePolicy="memory-disk" recyclingKey={String(item.id)} />
       ) : (
@@ -61,7 +63,7 @@ export function RankedRow({
         onScroll={onScroll}
         scrollEventThrottle={64}
         contentContainerStyle={styles.list}
-        getItemLayout={fixedItemLayout(NUM_W - 6 + CARD_W + 8)}
+        getItemLayout={fixedItemLayout(NUM_W - 14 + CARD_W + 8)}
         {...rowVirtualization}
       />
     </View>
@@ -79,12 +81,13 @@ const styles = StyleSheet.create({
   num: {
     width: NUM_W,
     color: colors.text,
-    fontSize: 48,
+    fontSize: 84,
     fontWeight: '900',
-    lineHeight: 52,
-    letterSpacing: -3,
+    lineHeight: 84,
+    letterSpacing: -6,
     textAlign: 'right',
-    marginRight: -6,
+    marginRight: -14,
+    marginBottom: -6,
     zIndex: 1,
     textShadowColor: '#000',
     textShadowRadius: 4,
@@ -92,7 +95,7 @@ const styles = StyleSheet.create({
   poster: {
     width: CARD_W,
     height: CARD_H,
-    borderRadius: 10,
+    borderRadius: 12,
     backgroundColor: colors.surface,
   },
   placeholder: {
