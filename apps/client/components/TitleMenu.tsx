@@ -1,4 +1,4 @@
-import { Share, StyleSheet, Text, View, useWindowDimensions, type GestureResponderEvent } from 'react-native'
+import { Share, StyleSheet, Text, View, useWindowDimensions } from 'react-native'
 import { Link, useRouter } from 'expo-router'
 import { Image } from 'expo-image'
 import { LinearGradient } from 'expo-linear-gradient'
@@ -7,8 +7,6 @@ import { backdropUrl, posterUrl, yearOf, type MediaItem } from '@/lib/tmdb'
 import { toLibraryItem, type LibraryItem } from '@/lib/library'
 import { toggleInMyList, useInMyList } from '@/lib/myListStore'
 import { colors } from '@/lib/theme'
-import { startZoom } from '@/lib/zoomTransition'
-import { useReduceMotion } from '@/lib/useReduceMotion'
 
 export type TitleMenuItem = LibraryItem & {
   overview?: string
@@ -49,7 +47,6 @@ export function TitleMenu({
   const inList = useInMyList(item.id, item.media_type)
   const isTv = item.media_type === 'tv'
   const href = `/title/${item.media_type}/${item.id}` as const
-  const reduceMotion = useReduceMotion()
 
   function play() {
     router.push({
@@ -118,16 +115,8 @@ export function TitleMenu({
       asChild
       // preventDefault frena la navegación del Link: el toque hace lo que pidió
       // la tarjeta y la vista previa sigue abriendo la ficha.
-      // Sin toque propio: el póster crece hasta ser el hero de la ficha
-      // (lib/zoomTransition). Si no se puede (Reducir movimiento, no se pudo
-      // medir), el Link navega como siempre.
       onPress={(e) => {
-        if (onPress) { e.preventDefault(); onPress(); return }
-        if (reduceMotion) return
-        const zooming = startZoom(e as GestureResponderEvent, item, () =>
-          router.push({ pathname: '/title/[type]/[id]', params: { type: item.media_type, id: String(item.id), zoom: '1' } } as never)
-        )
-        if (zooming) e.preventDefault()
+        if (onPress) { e.preventDefault(); onPress() }
       }}
       // Sin un onLongPress, Pressable dispara onPress al soltar aunque el dedo
       // haya estado apretado un rato: el menú se abría y, al soltar, el Link
@@ -135,7 +124,11 @@ export function TitleMenu({
       // queda "consumido" y solo lo maneja el menú nativo.
       onLongPress={() => {}}
     >
-      <Link.Trigger>{children}</Link.Trigger>
+      {/* Zoom nativo de iOS 18 (como Apple TV / Fotos): la tarjeta crece hasta
+          ser el hero de la ficha (Link.AppleZoomTarget allá) y vuelve a su
+          lugar al salir, también con el gesto. Lo anima el sistema, no JS.
+          Solo cuando el toque navega a la ficha. En iOS < 18, push normal. */}
+      <Link.Trigger withAppleZoom={!onPress}>{children}</Link.Trigger>
       <Link.Preview style={previewSize()}>
         <TitlePreview item={item} />
       </Link.Preview>

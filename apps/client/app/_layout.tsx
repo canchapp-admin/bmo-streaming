@@ -1,5 +1,4 @@
 import { useEffect } from 'react'
-import { ZoomOverlay } from '@/lib/zoomTransition'
 import { View, ActivityIndicator, StyleSheet } from 'react-native'
 import { Stack, useRouter, useSegments } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
@@ -61,16 +60,9 @@ function RootNavigator() {
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="login" options={{ headerShown: false, animation: 'fade' }} />
         <Stack.Screen name="profiles" options={{ headerShown: false, animation: 'fade' }} />
-        {/* Desde una tarjeta (?zoom=1) la ficha entra con fundido: el zoom del
-            póster (ZoomOverlay) hace de transición y la tapa mientras se monta
-            (Core Animation, no le quita cuadros). Al volver, se va con fundido.
-            Si no, el empuje normal. */}
         <Stack.Screen
           name="title/[type]/[id]"
-          options={({ route }) => ({
-            headerShown: false,
-            animation: (route.params as { zoom?: string } | undefined)?.zoom ? 'fade' : 'default',
-          })}
+          options={{ headerShown: false }}
         />
         <Stack.Screen name="person/[id]" options={{ headerShown: false }} />
         <Stack.Screen name="browse/[type]/[id]" options={{ headerShown: false }} />
@@ -86,7 +78,6 @@ function RootNavigator() {
           }}
         />
       </Stack>
-      <ZoomOverlay />
     </>
   )
 }

@@ -23,8 +23,5 @@
   "engines": {
     "node": ">=20.0.0",
     "bun": ">=1.0.0"
-  },
-  "dependencies": {
-    "expo-screen-orientation": "^56.0.5"
   }
 }

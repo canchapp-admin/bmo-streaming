@@ -1,3 +1,5 @@
+# Set by expo-router. This enables Fabric-only features from react-native-screens
+ENV['RNS_GAMMA_ENABLED'] ||= '1'
 require File.join(File.dirname(`node --print "require.resolve('expo/package.json')"`), "scripts/autolinking")
 require File.join(File.dirname(`node --print "require.resolve('react-native/package.json')"`), "scripts/react_native_pods")
 
@@ -7,15 +9,15 @@ podfile_properties = JSON.parse(File.read(File.join(__dir__, 'Podfile.properties
 def ccache_enabled?(podfile_properties)
   # Environment variable takes precedence
   return ENV['USE_CCACHE'] == '1' if ENV['USE_CCACHE']
-  
+
   # Fall back to Podfile properties
   podfile_properties['apple.ccacheEnabled'] == 'true'
 end
 
-ENV['RCT_NEW_ARCH_ENABLED'] ||= '0' if podfile_properties['newArchEnabled'] == 'false'
 ENV['EX_DEV_CLIENT_NETWORK_INSPECTOR'] ||= podfile_properties['EX_DEV_CLIENT_NETWORK_INSPECTOR']
-ENV['RCT_USE_RN_DEP'] ||= '1' if podfile_properties['ios.buildReactNativeFromSource'] != 'true' && podfile_properties['newArchEnabled'] != 'false'
-ENV['RCT_USE_PREBUILT_RNCORE'] ||= '1' if podfile_properties['ios.buildReactNativeFromSource'] != 'true' && podfile_properties['newArchEnabled'] != 'false'
+ENV['RCT_USE_RN_DEP'] ||= '1' if podfile_properties['ios.buildReactNativeFromSource'] != 'true'
+ENV['RCT_USE_PREBUILT_RNCORE'] ||= '1' if podfile_properties['ios.buildReactNativeFromSource'] != 'true'
+ENV['RCT_HERMES_V1_ENABLED'] ||= '1' if podfile_properties['expo.useHermesV1'] == 'true'
 platform :ios, podfile_properties['ios.deploymentTarget'] || '15.1'
 
 prepare_react_native_project!
@@ -60,33 +62,14 @@ target 'BMO' do
       :ccache_enabled => ccache_enabled?(podfile_properties),
     )
 
-    # expo-file-system 18.x calls ExpoAppDelegate which isn't in scope inside the pod.
-    # Replace with nil — background download sessions aren't used in this app.
-    fs_module = Dir.glob("#{Pod::Config.instance.installation_root}/../../node_modules/**/.bun/**/expo-file-system/ios/FileSystemModule.swift").first
-    fs_module ||= Dir.glob("#{Pod::Config.instance.installation_root}/../node_modules/**/expo-file-system/ios/FileSystemModule.swift").first
-    if fs_module && File.exist?(fs_module)
-      content = File.read(fs_module)
-      if content.include?("ExpoAppDelegate.getSubscriberOfType")
-        patched = content.gsub(
-          /EXSessionTaskDispatcher\(sessionHandler: ExpoAppDelegate\.getSubscriberOfType\([^)]+\)\)/,
-          "EXSessionTaskDispatcher(sessionHandler: nil)"
-        )
-        File.write(fs_module, patched)
-        puts "✅ Patched ExpoFileSystem: replaced ExpoAppDelegate with nil"
-      end
-    end
-
-    # fmt 11.0.2 (el que fija RN 0.81.5) no compila con el clang de Xcode 26:
-    # "call to consteval function ... is not a constant expression".
-    # FMT_USE_CONSTEVAL se autodetecta sin guarda de override, así que no se
-    # puede desactivar por -D; hay que neutralizar la macro en el header.
-    # Solo se pierde la validación EN COMPILACIÓN de las cadenas de formato
-    # (pasa a runtime), que es interno de fmt y no afecta a la app.
+    # fmt no compila con el clang de Xcode 26 ("call to consteval function ...
+    # is not a constant expression"). FMT_USE_CONSTEVAL se autodetecta sin
+    # guarda de override, así que se neutraliza la macro en el header. Solo se
+    # pierde la validación EN COMPILACIÓN de las cadenas de formato.
     fmt_base = File.join(Pod::Config.instance.installation_root, 'Pods/fmt/include/fmt/base.h')
     if File.exist?(fmt_base)
       content = File.read(fmt_base)
       if content.include?("#  define FMT_CONSTEVAL consteval")
-        # CocoaPods deja las fuentes de los pods en solo-lectura.
         File.chmod(0644, fmt_base)
         File.write(fmt_base, content.sub("#  define FMT_CONSTEVAL consteval", "#  define FMT_CONSTEVAL"))
         puts "✅ Patched fmt: FMT_CONSTEVAL neutralizado (incompatibilidad con clang de Xcode 26)"

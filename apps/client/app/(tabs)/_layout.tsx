@@ -1,4 +1,4 @@
-import { NativeTabs, Icon, Label } from 'expo-router/unstable-native-tabs'
+import { NativeTabs } from 'expo-router/unstable-native-tabs'
 import { colors } from '@/lib/theme'
 
 export default function TabsLayout() {
@@ -8,26 +8,26 @@ export default function TabsLayout() {
     // minimizeBehavior (iOS 26+): al bajar, la barra de vidrio se encoge y deja
     // el catálogo a pantalla completa; al subir vuelve. Es lo que hacen Apple
     // TV, Música y Safari.
-    <NativeTabs tintColor={colors.text}minimizeBehavior="onScrollDown">
+    <NativeTabs tintColor={colors.text} minimizeBehavior="onScrollDown">
       <NativeTabs.Trigger name="index">
-        <Icon sf="house.fill" />
-        <Label>Inicio</Label>
+        <NativeTabs.Trigger.Icon sf="house.fill" />
+        <NativeTabs.Trigger.Label>Inicio</NativeTabs.Trigger.Label>
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="series">
-        <Icon sf="tv" />
-        <Label>Series</Label>
+        <NativeTabs.Trigger.Icon sf="tv" />
+        <NativeTabs.Trigger.Label>Series</NativeTabs.Trigger.Label>
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="peliculas">
-        <Icon sf="film" />
-        <Label>Películas</Label>
+        <NativeTabs.Trigger.Icon sf="film" />
+        <NativeTabs.Trigger.Label>Películas</NativeTabs.Trigger.Label>
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="search" role="search">
-        <Icon sf="magnifyingglass" />
-        <Label>Buscar</Label>
+        <NativeTabs.Trigger.Icon sf="magnifyingglass" />
+        <NativeTabs.Trigger.Label>Buscar</NativeTabs.Trigger.Label>
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="library">
-        <Icon sf="bookmark.fill" />
-        <Label>Biblioteca</Label>
+        <NativeTabs.Trigger.Icon sf="bookmark.fill" />
+        <NativeTabs.Trigger.Label>Biblioteca</NativeTabs.Trigger.Label>
       </NativeTabs.Trigger>
     </NativeTabs>
   )
