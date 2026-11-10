@@ -538,13 +538,9 @@ export async function resolveDebridStream(
   opts: { forDownload?: boolean } = {}
 ): Promise<DebridResult | null> {
   if (!activeSources().length) return null
-  // Breaker: RD está limitando, la cuenta falla o venimos de una racha de
-  // resoluciones vacías. Insistir solo empeora el bloqueo; el resolver cae a scrapers.
-  if (!rdGuard.allow()) {
-    const g = rdGuard.snapshot()
-    console.error(`[debrid] breaker abierto (${g.openReason}) — reintenta en ${Math.ceil(g.retryInMs / 1000)}s`)
-    return null
-  }
+  // OJO: acá ya NO se consulta el breaker. Lo que llega hasta esta función es lo
+  // que el usuario pidió (play, selector, descarga) y se intenta siempre; el
+  // tráfico de fondo (prewarm) se filtra antes, en resolveStream, con bgGate.
 
   const t0 = Date.now()
   const imdbId = req.imdbId ?? await imdbIdOf(req.type, req.tmdbId)
@@ -576,7 +572,18 @@ export async function resolveDebridStream(
   // darle otra en silencio sería peor que avisarle.
   if (pick != null) {
     const chosen = runnable[pick]
-    if (!chosen) return null
+    if (!chosen) {
+      // La lista que vio el usuario ya no es la de ahora (caché de streams por
+      // instancia que expiró, o Torrentio devolvió otro orden): el índice no existe.
+      console.error(`[pick] #${pick} fuera de rango (hay ${runnable.length} ejecutables): la lista cambió entre listar y elegir`)
+      return null
+    }
+    const pp = chosen.parsed
+    console.error(
+      `[pick] #${pick} de ${runnable.length}: ${pp.filename} ` +
+      `(${pp.resolution ?? '?'}p ${pp.codec ?? '?'} ${pp.bitDepth ?? '?'}bit hdr=${pp.hdr} ` +
+      `${pp.sizeGB != null ? pp.sizeGB.toFixed(1) + 'GB' : '?GB'} ${pp.releaseKind ?? ''} cached=${pp.cached})`
+    )
     try {
       const out = await tryCandidate(chosen)
       rdGuard.recordSuccess()
@@ -590,7 +597,11 @@ export async function resolveDebridStream(
         sizeGB: cp.sizeGB,
       }
     } catch {
-      console.error(`[debrid] la fuente elegida #${pick} no resolvió`)
+      const lf = rdGuard.snapshot().lastFailure
+      console.error(
+        `[pick] #${pick} no resolvió: ${pp.filename} — último fallo RD: ` +
+        (lf ? `${lf.reason} (${lf.detail})` : 'ninguno registrado')
+      )
       return null
     }
   }

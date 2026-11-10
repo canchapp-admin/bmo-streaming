@@ -120,3 +120,40 @@ describe('interpretUser', () => {
     expect(interpretUser({ type: 'premium', premium: 0 }).ok).toBe(false)
   })
 })
+
+import { BackgroundGate } from './rd.guard'
+
+describe('BackgroundGate — el fondo se contiene, lo urgente no', () => {
+  const open = { allow: () => true }
+  const closed = { allow: () => false }
+
+  test('deja entrar hasta el máximo y rechaza el resto', () => {
+    const g = new BackgroundGate(2)
+    const a = g.tryEnter(open)
+    const b = g.tryEnter(open)
+    expect(a && b).toBeTruthy()
+    expect(g.tryEnter(open)).toBeNull()
+    expect(g.active).toBe(2)
+  })
+
+  test('al liberar un cupo vuelve a entrar', () => {
+    const g = new BackgroundGate(1)
+    const r = g.tryEnter(open)!
+    expect(g.tryEnter(open)).toBeNull()
+    r()
+    expect(g.tryEnter(open)).not.toBeNull()
+  })
+
+  test('liberar dos veces no deja el contador negativo ni abre cupos de más', () => {
+    const g = new BackgroundGate(1)
+    const r = g.tryEnter(open)!
+    r(); r()
+    expect(g.active).toBe(0)
+    g.tryEnter(open)
+    expect(g.tryEnter(open)).toBeNull()
+  })
+
+  test('con el breaker abierto el fondo no entra, aunque haya cupo', () => {
+    expect(new BackgroundGate(5).tryEnter(closed)).toBeNull()
+  })
+})

@@ -151,6 +151,12 @@ export class TTLCache<T> {
     return promise
   }
 
+  /** ¿Hay un valor vigente o una resolución en vuelo? (solo memoria, sin tocar red) */
+  has(key: string): boolean {
+    const c = this.store.get(key)
+    return !!(c && c.expires > Date.now()) || this.inflight.has(key)
+  }
+
   invalidate(key: string) {
     this.store.delete(key)
     this.saveToDisk()
