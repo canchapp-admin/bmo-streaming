@@ -14,8 +14,8 @@ import { tmdbService } from '../tmdb/tmdb.service'
 import { TTLCache } from './cache'
 import { rdGuard, classifyStatus, classifyPlaceholder, redactSecrets, interpretUser, type AccountHealth } from './rd.guard'
 import {
-  rankCandidates, selectRunnable, parseCacheState,
-  type AudioTag, type HwTier, type MediaRef, type ScoredCandidate, type TorrentioStream,
+  rankCandidates, selectRunnable, autoPlayable, parseCacheState,
+  type AudioTag, type HwTier, type LangPreference, type MediaRef, type PoorReason, type ScoredCandidate, type TorrentioStream,
 } from './torrentio.parse'
 
 // Etiqueta de idioma del audio para el cliente. "Español" cubre el ambiguo
@@ -359,6 +359,9 @@ export type DebridRequest = {
   episode?: number
   // Capacidad de decode del dispositivo (Fire TV Stick = 'low' → sin 4K/10-bit).
   hwTier?: HwTier
+  // Audio que pidió el usuario. 'latino' sube los releases en español en el
+  // ranking. DEBE ser el mismo al listar y al elegir por índice: cambia el orden.
+  lang?: LangPreference
 }
 
 // Carrera por olas en vez de lanzar todos los candidatos de una.
@@ -436,6 +439,10 @@ export type SourceOption = {
   sizeGB: number | null
   cached: boolean | null
   langs: string[]
+  // Procedencia (cam/web/bluray…) y por qué sería un mal candidato, para que el
+  // cliente pueda mostrar una etiqueta ("Copia de cine") en vez de dejarlo a ciegas.
+  release: string | null
+  poor: PoorReason | null
 }
 
 // Lista de fuentes ejecutables, en el mismo orden que usa el resolver — el
@@ -451,6 +458,8 @@ export async function listDebridSources(req: DebridRequest): Promise<SourceOptio
     sizeGB: c.parsed.sizeGB,
     cached: c.parsed.cached,
     langs: [...c.parsed.langs],
+    release: c.parsed.releaseKind,
+    poor: c.poor,
   }))
 }
 
@@ -460,7 +469,7 @@ async function rankRunnable(req: DebridRequest): Promise<ScoredCandidate[]> {
   const imdbId = req.imdbId ?? await imdbIdOf(req.type, req.tmdbId)
   if (!imdbId) return []
   const streams = await fetchStreamsCached(imdbId, req.type, req.season, req.episode)
-  return selectRunnable(rankCandidates(streams, req.media, req.hwTier))
+  return selectRunnable(rankCandidates(streams, req.media, req.hwTier, req.lang))
 }
 
 /**
@@ -540,7 +549,7 @@ export async function resolveDebridStream(
 
   const streams = await fetchStreamsCached(imdbId, req.type, req.season, req.episode)
   const tFetch = Date.now() - t0
-  const r = rankCandidates(streams, req.media, req.hwTier)
+  const r = rankCandidates(streams, req.media, req.hwTier, req.lang)
 
   if (r.cacheSignal === 'absent' && streams.length > 0) {
     // Torrentio cambió el formato del marcador de cacheado: seguimos andando
@@ -582,8 +591,20 @@ export async function resolveDebridStream(
     }
   }
 
+  // Reproducción automática: nunca una copia de cine ni un doblaje ajeno. Si lo
+  // único cacheado es eso (típico de un estreno), se devuelve null y el resolver
+  // prueba los scrapers; el usuario aún puede elegirlo a mano desde el selector.
+  const auto = autoPlayable(runnable)
+  if (!auto.length) {
+    console.error(
+      `[debrid] ${runnable.length} cacheados pero todos "pobres" ` +
+      `(${[...new Set(runnable.map((c) => c.poor))].join(', ')}) — no se autoreproduce`
+    )
+    return null
+  }
+
   const tRace = Date.now()
-  const winner = await raceInWaves(runnable, WAVES, tryCandidate)
+  const winner = await raceInWaves(auto, WAVES, tryCandidate)
   if (!winner) {
     console.error(`[debrid] torrentio ${tFetch}ms + carrera ${Date.now() - tRace}ms — ninguno de ${runnable.length} resolvió`)
     rdGuard.recordExhausted()
@@ -646,7 +667,7 @@ export async function debugTorrentio(
   )
 
   const streams = await fetchStreams(imdbId, type, season, episode)
-  const r = rankCandidates(streams, media)
+  const r = rankCandidates(streams, media, 'high', lang)
   const runnable = selectRunnable(r)
 
   return {
@@ -680,6 +701,7 @@ export async function debugTorrentio(
       hdr: c.parsed.hdr,
       sizeGB: c.parsed.sizeGB,
       langs: [...c.parsed.langs],
+      poor: c.poor,
       parts: Object.fromEntries(Object.entries(c.parts).map(([k, v]) => [k, Math.round(v)])),
     })),
     rejected: r.rejected.slice(0, 15),

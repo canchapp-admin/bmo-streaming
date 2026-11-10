@@ -464,7 +464,7 @@ async function scrape(
     // velocidad. 'realdebrid' se trata como una fuente más para el exclude.
     if (debridEnabled && !exclude.includes('realdebrid')) {
       try {
-        const debrid = await resolveDebridStream({ type, tmdbId, media: ref, imdbId, season, episode, hwTier })
+        const debrid = await resolveDebridStream({ type, tmdbId, media: ref, imdbId, season, episode, hwTier, lang })
         if (debrid) {
           // `debrid.label` es el nombre del archivo que se va a reproducir: con
           // él se elige el subtítulo del MISMO release, que es la diferencia
@@ -550,12 +550,11 @@ export function resolveStream(
   // El hwTier entra en la clave: un Fire TV ('low') y un iPhone ('high') pueden
   // resolver el mismo título a fuentes distintas, no deben compartir caché.
   const hw = hwTier === 'low' ? ':hw=low' : ''
-  // El idioma NO entra en la clave. Ya no influye en qué fuente se elige, así
-  // que separar por idioma sólo servía para partir la caché en dos: el mismo
-  // título se resolvía una vez para 'original' y otra para 'latino', con la
-  // mitad de aciertos y el doble de scrapes. Con una sola entrada, el segundo
-  // que le da play a un título arranca del caché.
-  const key = (ex ? `${base}:x=${ex}` : base) + hw
+  // El idioma entra en la clave SOLO cuando es 'latino': ahora sí cambia qué
+  // release gana (sube los doblados al español). 'original' conserva la clave de
+  // siempre, así que su caché no se parte ni se invalida.
+  const lg = lang === 'latino' ? ':lang=latino' : ''
+  const key = (ex ? `${base}:x=${ex}` : base) + hw + lg
   return cache.resolve(key, () => scrape(type, tmdbId, lang, season, episode, exclude, hwTier))
 }
 
@@ -608,7 +607,7 @@ export async function listSources(
 ) {
   const built = await buildMedia(type, tmdbId, season, episode)
   if (!built) return []
-  return listDebridSources({ type, tmdbId, media: built.ref, season, episode, hwTier })
+  return listDebridSources({ type, tmdbId, media: built.ref, season, episode, hwTier, lang })
 }
 
 // Resuelve UNA fuente concreta elegida por el usuario. No pasa por el caché de
@@ -625,7 +624,7 @@ export async function resolvePickedSource(
 
   const subsP = fetchSubCandidates(type, tmdbId, season, episode)
   const debrid = await resolveDebridStream(
-    { type, tmdbId, media: built.ref, season, episode, hwTier },
+    { type, tmdbId, media: built.ref, season, episode, hwTier, lang },
     pick
   )
   if (!debrid) return null

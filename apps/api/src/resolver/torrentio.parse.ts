@@ -30,6 +30,11 @@ export type CacheState = true | false | null
 export type AudioTag =
   | 'latino' | 'castellano' | 'spanish'
   | 'english' | 'italian' | 'french' | 'portuguese'
+  // Idiomas que casi nunca son lo que el usuario quiere oír. Existen para poder
+  // reconocer un release que SOLO trae ese audio (un doblaje ruso o hindi de una
+  // peli inglesa) y no dejar que pase por "no sé qué idioma es".
+  | 'russian' | 'indian' | 'korean' | 'japanese' | 'chinese'
+  | 'german' | 'turkish' | 'arabic' | 'polish'
 
 // Procedencia del release. Es independiente de la resolución: un "1080p" puede
 // ser una grabación de cine (CAM/PRE-HD) que se ve horrible. En estrenos
@@ -76,7 +81,7 @@ export type MediaRef = {
 export type Rejection =
   | 'no-url' | 'not-video' | 'av1'
   | 'wrong-year' | 'wrong-season' | 'wrong-episode'
-  | 'too-heavy'
+  | 'too-heavy' | 'title-mismatch'
 
 // Capacidad de decodificación del dispositivo que pide el stream:
 //  - 'high': iPhone / TV con hardware capaz → sin restricciones extra.
@@ -85,9 +90,19 @@ export type Rejection =
 //    revientan la memoria (el LMK de Android mata la app). Se rechazan de plano.
 export type HwTier = 'low' | 'high'
 
+// Por qué un candidato es "pobre": se ve mal o se oye en un idioma que el usuario
+// no entiende. No se descarta de plano (si es lo único que hay, el selector
+// manual puede ofrecerlo), pero NUNCA se reproduce solo si existe algo mejor.
+export type PoorReason = 'cam' | 'screener' | 'foreign-audio'
+
+// Preferencia de audio del usuario. 'latino' sube los releases en español;
+// 'original' no toca el ranking.
+export type LangPreference = 'original' | 'latino'
+
 export type ScoredCandidate = {
   parsed: ParsedStream
   score: number
+  poor: PoorReason | null
   // Desglose por término. Los tests afirman sobre términos individuales en vez
   // de sobre un total mágico, y debugTorrentio lo expone para poder ver POR QUÉ
   // ganó un archivo sin tener que reproducir el cálculo a mano.
@@ -212,6 +227,17 @@ const LANG_PATTERNS: [AudioTag, RegExp][] = [
   ['italian', /\b(?:italian|ita)\b|🇮🇹/i],
   ['french', /\b(?:french|fre|fra|vff|vostfr)\b|🇫🇷/i],
   ['portuguese', /\b(?:portuguese|por|pt[\s._-]?br|dublado)\b|🇧🇷|🇵🇹/i],
+  // Cirílico = release ruso/ucraniano aunque no diga "Rus". Los packs de esos
+  // trackers aparecen seguido entre los resultados.
+  ['russian', /\b(?:russian|rus|mvo|dvo|lostfilm)\b|🇷🇺|[\u0400-\u04FF]/i],
+  ['indian', /\b(?:hindi|tamil|telugu|malayalam|kannada|bengali|punjabi|marathi|bollywood)\b|🇮🇳/i],
+  ['korean', /\b(?:korean|kor)\b|🇰🇷/i],
+  ['japanese', /\b(?:japanese|jpn)\b|🇯🇵/i],
+  ['chinese', /\b(?:chinese|mandarin|cantonese)\b|🇨🇳|🇭🇰|🇹🇼/i],
+  ['german', /\b(?:german|ger|deu)\b|🇩🇪/i],
+  ['turkish', /\b(?:turkish)\b|🇹🇷/i],
+  ['arabic', /\b(?:arabic)\b|🇸🇦|🇪🇬/i],
+  ['polish', /\b(?:polish|lektor)\b|🇵🇱/i],
 ]
 
 export function parseLangs(text: string): Set<AudioTag> {
@@ -230,7 +256,7 @@ export function parseLangs(text: string): Set<AudioTag> {
 const NON_VIDEO_EXT_RE = /\.(?:rar|zip|7z|iso|exe|nfo|txt|srt|sub|idx|jpe?g|png)$/i
 
 // Grabaciones de sala y pre-estrenos: se ven mal a cualquier resolución.
-const CAM_RE = /\b(?:cam|hdcam|camrip|hdts|telesync|telecine|hdtc|pre[\s._-]?hd|pre[\s._-]?dvd)\b/i
+const CAM_RE = /\b(?:cam|hdcam|hqcam|hq[\s._-]?cam|camrip|cam[\s._-]?rip|hdts|hd[\s._-]?ts|telesync|telecine|hdtc|tc|pre[\s._-]?hd|pre[\s._-]?dvd)\b/i
 const SCREENER_RE = /\b(?:scr|screener|dvdscr|r5)\b/i
 
 // "TS" a secas SÍ se usa, pero solo tras sacar las extensiones de contenedor.
@@ -368,6 +394,10 @@ export function rejectionOf(p: ParsedStream, m: MediaRef, hwTier: HwTier = 'high
   // si el archivo TIENE año parseable y no coincide — muchos releases legítimos
   // no traen año (p.ej. "El club de la Lucha 4Kreescalado2160.mkv").
   if (m.year != null && p.year != null && Math.abs(p.year - m.year) > 1) return 'wrong-year'
+  // Sin año en el archivo, el título es lo ÚNICO que ata este release a la peli
+  // pedida. Si no comparte ni una palabra (ni del título localizado ni del
+  // original), no hay nada que diga que sea la misma película: se descarta.
+  if (p.year == null && titleOverlap(p.filename, m) === 0) return 'title-mismatch'
   return null
 }
 
@@ -395,13 +425,16 @@ export function decodePenalty(
   return -35
 }
 
-// Sin parámetro de idioma a propósito: el ranking optimiza arranque instantáneo
-// (cacheado) y calidad, nada más. Si vuelve a aparecer un `lang` acá, es que se
-// está pagando velocidad por una preferencia de doblaje.
+// El idioma es una preferencia OPCIONAL (`prefer`) y por defecto no toca nada. Solo
+// cuando el usuario pide español se suma un bonus moderado: los candidatos ya son
+// todos cacheados, así que elegir entre ellos por idioma no cuesta velocidad. Los
+// castigos de calidad (cam, upscale, remux, audio ajeno) son mayores que el bonus,
+// de modo que "latino" nunca justifica un archivo malo.
 export function scoreStream(
   p: ParsedStream,
   m: MediaRef,
   hwTier: HwTier = 'high',
+  prefer: LangPreference = 'original',
 ): ScoredCandidate {
   const parts: Record<string, number> = {}
 
@@ -421,16 +454,39 @@ export function scoreStream(
   // no es preferencia de idioma: un doblaje al italiano de una película inglesa
   // es peor material de partida, sin importar qué idioma quiera el usuario.
   const orig = m.originalLanguage
-  const tagFor: Record<string, AudioTag> = { en: 'english', it: 'italian', fr: 'french', pt: 'portuguese', es: 'spanish' }
+  const tagFor: Record<string, AudioTag> = {
+    en: 'english', it: 'italian', fr: 'french', pt: 'portuguese', es: 'spanish',
+    ru: 'russian', hi: 'indian', ta: 'indian', te: 'indian', ml: 'indian', kn: 'indian', bn: 'indian',
+    ko: 'korean', ja: 'japanese', zh: 'chinese', cn: 'chinese', de: 'german', tr: 'turkish', ar: 'arabic', pl: 'polish',
+  }
   const wanted = orig ? tagFor[orig] : undefined
   // Un release que además trae español (dual/multi) NO se castiga: sigue
   // teniendo el audio original adentro.
-  const keepsOriginal = !wanted || p.langs.size === 0 || p.langs.has(wanted)
+  // Pidiendo español, un doblaje al español TAMBIÉN es lo buscado: no se castiga
+  // por "pisar el original" (lo haría perder justo contra el audio que no pidió).
+  const wantsSpanish = prefer === 'latino' && (p.langs.has('latino') || p.langs.has('spanish') || p.langs.has('castellano'))
+  const keepsOriginal = !wanted || p.langs.size === 0 || p.langs.has(wanted) || wantsSpanish
   parts.lang = keepsOriginal ? 0 : -60
 
   // Título: penalización, NUNCA rechazo. Los releases usan abreviaturas y
   // títulos traducidos, así que un solapamiento bajo es sospecha, no certeza.
-  parts.title = titleOverlap(p.filename, m) === 0 ? -80 : 0
+  // Solapamiento parcial también es sospecha (p. ej. "Superman" dentro de
+  // "Superman II"), pero más leve que un cero rotundo.
+  const overlap = titleOverlap(p.filename, m)
+  parts.title = overlap === 0 ? -80 : overlap < 0.5 ? -40 : 0
+
+  // Preferencia de idioma. SOLO cuando el usuario pidió español: los candidatos
+  // ya son todos cacheados (arrancan igual de rápido), así que elegir entre
+  // ellos por idioma no cuesta velocidad. El peso (35) deja que un release latino
+  // en 720p le gane a uno original 1080p parecido, pero no que un latino malo
+  // (cam, 4K upscale, remux enorme) le gane a uno bueno: esos castigos son mayores.
+  if (prefer === 'latino') {
+    parts.langPref =
+      p.langs.has('latino') ? 35
+      : p.langs.has('spanish') && !p.langs.has('castellano') ? 30
+      : p.langs.has('castellano') ? 12
+      : 0
+  }
 
   // Resolución invertida respecto de lo habitual: el objetivo es un teléfono
   // por datos móviles, donde 1080p es el punto dulce y 4K es un lastre.
@@ -492,8 +548,21 @@ export function scoreStream(
       (p.sizeGB != null && p.sizeGB > 8 ? -15 : 0)
   }
 
+  // ¿Es un candidato pobre? Solo audio ajeno: si el release trae el original,
+  // español o inglés (aunque sea además de otro), no lo es.
+  const acceptable = new Set<AudioTag>(['english', 'spanish', 'latino', 'castellano'])
+  if (wanted) acceptable.add(wanted)
+  const foreignOnly = p.langs.size > 0 && [...p.langs].every((t) => !acceptable.has(t))
+  if (foreignOnly) parts.foreignAudio = -80
+
+  const poor: PoorReason | null =
+    p.releaseKind === 'cam' ? 'cam'
+    : p.releaseKind === 'screener' ? 'screener'
+    : foreignOnly ? 'foreign-audio'
+    : null
+
   const score = Object.values(parts).reduce((a, b) => a + b, 0)
-  return { parsed: p, score, parts }
+  return { parsed: p, score, parts, poor }
 }
 
 // ── Ranking ─────────────────────────────────────────────────────────────────
@@ -509,7 +578,8 @@ export type RankResult = {
 export function rankCandidates(
   streams: TorrentioStream[],
   m: MediaRef,
-  hwTier: HwTier = 'high'
+  hwTier: HwTier = 'high',
+  prefer: LangPreference = 'original'
 ): RankResult {
   const parsed = streams.map(parseStream)
   const rejected: { label: string; reason: Rejection }[] = []
@@ -540,7 +610,7 @@ export function rankCandidates(
   }
 
   const ranked = kept
-    .map((p) => scoreStream(p, m, hwTier))
+    .map((p) => scoreStream(p, m, hwTier, prefer))
     .sort((a, b) => b.score - a.score)
 
   return { ranked, rejected, hasLatinoAlternative, cacheSignal, cacheCounts }
@@ -563,6 +633,17 @@ export function rankCandidates(
 // ahí sería correr justamente los torrents que no queremos tocar. Con cero
 // cacheados devolvemos vacío → el caller da null → scrape() cae a los scrapers.
 export function selectRunnable(r: RankResult): ScoredCandidate[] {
-  if (r.cacheSignal === 'absent') return r.ranked
-  return r.ranked.filter((c) => c.parsed.cached === true)
+  const pool = r.cacheSignal === 'absent' ? r.ranked : r.ranked.filter((c) => c.parsed.cached === true)
+  // Si existe AL MENOS un candidato decente, los pobres (copias de cine, audio
+  // ajeno) ni se listan: ofrecer una grabación de sala cuando hay un BluRay es
+  // ruido. Si solo quedan pobres, se conservan para que el selector manual pueda
+  // mostrarlos con su etiqueta — pero ver autoPlayable().
+  return pool.some((c) => !c.poor) ? pool.filter((c) => !c.poor) : pool
+}
+
+// Lo que el resolver puede reproducir SOLO, sin que el usuario lo elija. Nunca
+// incluye candidatos pobres: es preferible caer a los scrapers (que pueden tener
+// una copia buena) a arrancar una grabación de cine o un doblaje ruso sin avisar.
+export function autoPlayable(runnable: ScoredCandidate[]): ScoredCandidate[] {
+  return runnable.filter((c) => !c.poor)
 }
