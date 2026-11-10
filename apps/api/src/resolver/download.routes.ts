@@ -1,54 +1,7 @@
 import { Elysia, t } from 'elysia'
 import { resolveForDownload } from './resolver.service'
 import type { AudioLang } from './resolver.service'
-
-function resolveUrl(href: string, base: string): string {
-  if (href.startsWith('http')) return href
-  if (href.startsWith('/')) return new URL(base).origin + href
-  return base.slice(0, base.lastIndexOf('/') + 1) + href
-}
-
-// Para descarga elige la calidad MÁS BAJA disponible:
-// mismos segmentos pero ~3x más pequeños → descarga 3x más rápida
-function pickVariant(master: string, baseUrl: string): { url: string; quality: string } | null {
-  const lines = master.split('\n')
-  const variants: { bw: number; url: string }[] = []
-
-  for (let i = 0; i < lines.length - 1; i++) {
-    const line = lines[i].trim()
-    if (!line.startsWith('#EXT-X-STREAM-INF:')) continue
-    const bwMatch = line.match(/BANDWIDTH=(\d+)/)
-    const bw = bwMatch ? Number(bwMatch[1]) : 0
-    const rawUrl = lines[i + 1]?.trim()
-    if (!rawUrl || rawUrl.startsWith('#')) continue
-    variants.push({ bw, url: resolveUrl(rawUrl, baseUrl) })
-  }
-
-  if (!variants.length) return null
-  // Ordenar por bitrate ascendente → tomar el más pequeño disponible
-  variants.sort((a, b) => a.bw - b.bw)
-  const v = variants[0]
-  const quality = v.bw >= 3_000_000 ? '1080p' : v.bw >= 1_500_000 ? '720p' : v.bw >= 700_000 ? '480p' : '360p'
-  return { url: v.url, quality }
-}
-
-type Segment = { url: string; duration: number }
-
-function parseVariant(m3u8: string, baseUrl: string): Segment[] {
-  const lines = m3u8.split('\n')
-  const segments: Segment[] = []
-  let dur = 0
-  for (const raw of lines) {
-    const line = raw.trim()
-    if (line.startsWith('#EXTINF:')) {
-      dur = parseFloat(line.slice(8).split(',')[0]) || 0
-    } else if (line && !line.startsWith('#')) {
-      segments.push({ url: resolveUrl(line, baseUrl), duration: dur })
-      dur = 0
-    }
-  }
-  return segments
-}
+import { resolveUrl, pickVariant, parseVariant, playlistKind, isEncrypted, type Segment } from './download.playlist'
 
 async function buildSegmentList(
   streamUrl: string,
@@ -56,22 +9,35 @@ async function buildSegmentList(
 ): Promise<{ segments: Segment[]; quality: string }> {
   const headers: Record<string, string> = referer ? { Referer: referer } : {}
 
-  // 1. Descargar el master de la CDN
-  const masterRes = await fetch(streamUrl, { headers, signal: AbortSignal.timeout(10_000) })
-  if (!masterRes.ok) throw new Error(`master HTTP ${masterRes.status}`)
-  const master = await masterRes.text()
+  const get = async (url: string, what: string): Promise<string> => {
+    const res = await fetch(url, { headers, signal: AbortSignal.timeout(10_000) })
+    if (!res.ok) throw new Error(`${what} HTTP ${res.status}`)
+    return res.text()
+  }
 
-  // 2. Elegir variante
-  const chosen = pickVariant(master, streamUrl)
-  if (!chosen) throw new Error('No variant found')
+  // 1. Bajar lo que devolvió el resolver: puede ser maestra o ya de medios.
+  const first = await get(streamUrl, 'playlist')
+  const kind = playlistKind(first)
+  if (!kind) throw new Error('Playlist HLS inválida')
 
-  // 3. Descargar la variante
-  const variantRes = await fetch(chosen.url, { headers, signal: AbortSignal.timeout(10_000) })
-  if (!variantRes.ok) throw new Error(`variant HTTP ${variantRes.status}`)
-  const variant = await variantRes.text()
+  let variantText = first
+  let variantUrl = streamUrl
+  let quality = ''
 
-  const segments = parseVariant(variant, chosen.url)
-  return { segments, quality: chosen.quality }
+  // 2. Si es maestra, elegir la variante y bajarla.
+  if (kind === 'master') {
+    const chosen = pickVariant(first, streamUrl)
+    if (!chosen) throw new Error('No variant found')
+    variantUrl = chosen.url
+    quality = chosen.quality
+    variantText = await get(variantUrl, 'variante')
+  }
+
+  if (isEncrypted(variantText)) throw new Error('Fuente cifrada: no se puede descargar')
+
+  const segments = parseVariant(variantText, variantUrl)
+  if (!segments.length) throw new Error('La playlist no tiene segmentos')
+  return { segments, quality }
 }
 
 // La calidad no viene en el StreamResult para fuentes 'file', pero el nombre
