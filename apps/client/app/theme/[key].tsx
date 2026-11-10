@@ -154,6 +154,7 @@ export default function ThemeScreen() {
                   style={styles.logo}
                   contentFit="contain"
                   contentPosition="left"
+                  tintColor={theme.logoTint}
                   transition={300}
                   accessibilityRole="header"
                   accessibilityLabel={theme.name}

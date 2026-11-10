@@ -23,6 +23,8 @@ export type SearchTheme = {
   // (RuPaul's Drag Race): su logo real reemplaza al nombre escrito, y el hero
   // usa una imagen elegida a mano en vez del primer título.
   logo?: string
+  // Pinta el logo de un solo color (logos oscuros que no se leen sobre fotos).
+  logoTint?: string
   heroArt?: string
   // Se muestra como franquicia ("Franquicia", en la fila de Franquicias) y no
   // en la fila de Especiales.
@@ -37,6 +39,24 @@ export type SearchTheme = {
 }
 
 export const SEARCH_THEMES: SearchTheme[] = [
+  {
+    key: 'harrypotter',
+    name: 'Harry Potter',
+    tagline: 'El mundo mágico, de la piedra filosofal a los animales fantásticos',
+    aliases: [
+      'harry potter', 'harry poter', 'hary potter', 'potter', 'hogwarts', 'mundo magico', 'wizarding world',
+      'animales fantasticos', 'fantastic beasts', 'hermione', 'dumbledore', 'voldemort', 'quidditch',
+      'expecto patronum', 'gryffindor', 'slytherin', 'hufflepuff', 'ravenclaw',
+    ],
+    // Noche en Hogwarts: azul profundo, con el dorado de la luz de las velas.
+    colors: ['#2B4C8C', '#C9A23A'],
+    symbol: 'wand.and.stars',
+    art: '/kmEsQL2vOTA0jnM28fXS45Ky8kX.jpg', // Harry, Ron y Hermione
+    heroArt: '/4gV0rKUjB1nLUdZB4zIltLvNZZr.jpg', // el castillo de noche
+    logo: '/3qI4kiM8oasvuQhr7cslPzbuLno.png', // "Harry Potter", sin subtítulo
+    logoTint: '#F2D58A', // el logo es bronce oscuro: en dorado se lee
+    franchise: true,
+  },
   {
     key: 'rupaul',
     name: "RuPaul's Drag Race",

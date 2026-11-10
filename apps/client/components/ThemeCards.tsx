@@ -69,6 +69,7 @@ export function ThemeBanner({ theme }: { theme: SearchTheme }) {
               source={ART_BASE + 'w500' + theme.logo}
               style={styles.bannerLogo}
               contentFit="contain"
+              tintColor={theme.logoTint}
               contentPosition="left"
               accessibilityLabel={theme.name}
             />

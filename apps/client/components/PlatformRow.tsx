@@ -54,6 +54,11 @@ const FRANCHISES: Platform[] = [
     key: 'rupaul', name: "RuPaul's Drag Race", href: '/theme/rupaul',
     logo: '/9sSyE71HAlNLwaReiLIey6L7tYc.png', bg: ['#FF2E93', '#5B1A9E'], logoW: 0.8,
   },
+  // Harry Potter: el logo en dorado sobre el azul de la noche en Hogwarts.
+  {
+    key: 'harrypotter', name: 'Harry Potter', href: '/theme/harrypotter',
+    logo: '/3qI4kiM8oasvuQhr7cslPzbuLno.png', bg: ['#2B4C8C', '#0B1226'], tint: '#F2D58A', logoW: 0.78,
+  },
   { key: 'pixar', logo: '/1TjvGVDMYsj6JBxOAkUHpPEwLf7.png', bg: ['#2AA5E0', '#0D5C8A'], tint: '#fff', logoW: 0.62 },
   { key: 'disneyanimation', logo: '/8bH86UPmMP8hlITzXV3XgV9eaAc.png', bg: ['#1B3A8C', '#0A1640'], tint: '#fff', logoW: 0.66 },
   { key: 'dreamworks', logo: '/3BPX5VGBov8SDqTV7wC1L1xShAS.png', bg: ['#1E6FCC', '#0B2E5C'], tint: '#fff', logoW: 0.5 },

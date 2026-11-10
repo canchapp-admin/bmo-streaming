@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Animated, Easing, StyleSheet, View, useWindowDimensions } from 'react-native'
 import { SymbolView } from 'expo-symbols'
 import * as Haptics from 'expo-haptics'
-import Svg, { Circle, Defs, Path, RadialGradient, Stop } from 'react-native-svg'
+import Svg, { Circle, Defs, Ellipse, LinearGradient as SvgLinearGradient, Path, RadialGradient, Stop } from 'react-native-svg'
 import { useReduceMotion } from '@/lib/useReduceMotion'
 
 // Animación de bienvenida de cada especial y de cada plataforma/franquicia: al entrar a Navidad nieva un
@@ -28,14 +28,27 @@ type Effect =
   | { type: 'fall' | 'rise'; count: number; shape: Shape; size: [number, number]; speed: [number, number]; sway: number }
   | { type: 'twinkle'; count: number; color: string }
   | { type: 'flash'; color: string }
-  | { type: 'bats'; count: number }
+  | { type: 'bats'; count: number; rim?: string; fill?: string; delayMs?: number }
+  | { type: 'rain'; count: number }
+  | { type: 'candles'; count: number }
+  | { type: 'spell'; at: number }
+  | { type: 'searchlight' }
   | { type: 'snow'; count: number }
   | { type: 'hyperspace'; count: number; color: string }
   | { type: 'bokeh'; colors: string[]; count: number }
+  | { type: 'webs' }
 
 // Qué animación tiene cada especial. Los que no figuran no tienen.
 // Un especial puede combinar varias (Halloween: murciélagos + brasas).
 const EFFECTS: Record<string, Effect | Effect[]> = {
+  // Harry Potter: el Gran Comedor sin dibujar a nadie. Velas que flotan y
+  // titilan sobre el castillo de noche, un cielo con estrellas y, al segundo,
+  // un hechizo: una estela de chispas doradas que cruza en arco y estalla.
+  harrypotter: [
+    { type: 'twinkle', count: 18, color: '#FFF3D0' },
+    { type: 'candles', count: 15 },
+    { type: 'spell', at: 1300 },
+  ],
   // RuPaul's Drag Race: lluvia de confeti y purpurina de final de temporada,
   // en los colores del show (fucsia, dorado, plateado, violeta), con destellos
   // dorados que titilan. El confeti gira y además "voltea" en 3D: brilla y se
@@ -114,8 +127,22 @@ const EFFECTS: Record<string, Effect | Effect[]> = {
   },
   // Franquicias.
   starwars: { type: 'hyperspace', count: 70, color: '#DCEBFF' }, // salto al hiperespacio
-  marvel: [{ type: 'bokeh', colors: ['#ED1D24', '#FF4A4A'], count: 12 }, { type: 'flash', color: '#FF4A4A' }],
-  dc: [{ type: 'flash', color: '#BFD9FF' }, { type: 'bokeh', colors: ['#2F7BFF', '#5C9DFF'], count: 10 }], // relámpago
+  // Marvel: un guiño a Spider-Man sin dibujarlo (su diseño tiene derechos):
+  // dos telarañas salen disparadas y quedan tejidas en las esquinas, sobre
+  // luces rojas Marvel.
+  marvel: [
+    { type: 'bokeh', colors: ['#ED1D24', '#FF4A4A'], count: 10 },
+    { type: 'webs' },
+  ],
+  // DC: una noche en Gotham, sin el emblema (tiene derechos). Llovizna en
+  // diagonal, un reflector que barre el cielo, un relámpago y una bandada de
+  // murciélagos con borde azul frío.
+  dc: [
+    { type: 'rain', count: 70 },
+    { type: 'searchlight' },
+    { type: 'flash', color: '#BFD9FF' },
+    { type: 'bats', count: 11, rim: 'rgba(150,190,255,0.5)', fill: '#070B14', delayMs: 700 },
+  ],
   pixar: {
     type: 'rise', count: 22, // globos de colores
     shape: { kind: 'symbol', name: 'circle.fill', colors: ['#FF5A5F', '#FFC93C', '#3FC1C9', '#8A6CFF', '#5FD068', '#FF8FB1'] },
@@ -145,6 +172,9 @@ const FADE_MS = 1200
 const TIMING: Record<string, { show: number; fade: number }> = {
   navidad: { show: 6500, fade: 2200 },
   rupaul: { show: 5200, fade: 1600 },
+  marvel: { show: 4400, fade: 1100 },
+  dc: { show: 4800, fade: 1300 },
+  harrypotter: { show: 5600, fade: 1600 },
 }
 
 const rand = (min: number, max: number) => min + Math.random() * (max - min)
@@ -176,10 +206,15 @@ export function ThemeEffect({ themeKey }: { themeKey: string }) {
       {effects.map((e, i) =>
         e.type === 'flash' ? <Flash key={i} color={e.color} />
         : e.type === 'twinkle' ? <Twinkle key={i} count={e.count} color={e.color} />
-        : e.type === 'bats' ? <Bats key={i} count={e.count} />
+        : e.type === 'bats' ? <Bats key={i} count={e.count} rim={e.rim} fill={e.fill} delayMs={e.delayMs} />
+        : e.type === 'rain' ? <Rain key={i} count={e.count} />
+        : e.type === 'candles' ? <Candles key={i} count={e.count} />
+        : e.type === 'spell' ? <Spell key={i} at={e.at} />
+        : e.type === 'searchlight' ? <Searchlight key={i} />
         : e.type === 'snow' ? <Snow key={i} count={e.count} />
         : e.type === 'hyperspace' ? <Hyperspace key={i} count={e.count} color={e.color} />
         : e.type === 'bokeh' ? <Bokeh key={i} colors={e.colors} count={e.count} />
+        : e.type === 'webs' ? <Webs key={i} />
         : <Drift key={i} effect={e} />
       )}
     </Animated.View>
@@ -391,7 +426,14 @@ const BAT_PATH =
   'C51 41 53 38 54 33 C56 30 58 30 60 33 C63 27 69 26 74 31 C77 24 83 23 88 28 ' +
   'C90 22 94 20 100 20 C96 13 90 9 82 8 C70 7 60 12 55 16 L53 8 Z'
 
-function Bats({ count }: { count: number }) {
+function Bats({
+  count,
+  // Halloween: casi negro violáceo con borde naranja (calabazas). DC: más
+  // azul y con borde frío (luna, reflector).
+  rim = 'rgba(255,140,42,0.45)',
+  fill = '#120A1A',
+  delayMs = 0,
+}: { count: number; rim?: string; fill?: string; delayMs?: number }) {
   const { width, height } = useWindowDimensions()
   const bats = useMemo(
     () =>
@@ -408,7 +450,7 @@ function Bats({ count }: { count: number }) {
           wave: rand(14, 34),
           // Los grandes (cercanos) cruzan más rápido; los chicos, lejos y lentos.
           duration: rand(2200, 3400) * (1.3 - (size - 26) / 32 * 0.5),
-          delay: rand(0, 2200),
+          delay: delayMs + rand(0, 2200),
           flapMs: rand(110, 170),
           opacity: 0.55 + ((size - 26) / 32) * 0.4,
           progress: new Animated.Value(0),
@@ -471,7 +513,7 @@ function Bats({ count }: { count: number }) {
               {/* Casi negro con un toque violeta, y un borde naranja tenue
                   como si los iluminara la luna/las calabazas: sobre fondos
                   oscuros sigue leyéndose la silueta. */}
-              <Path d={BAT_PATH} fill="#120A1A" stroke="rgba(255,140,42,0.45)" strokeWidth={1.5} />
+              <Path d={BAT_PATH} fill={fill} stroke={rim} strokeWidth={1.5} />
             </Svg>
           </Animated.View>
         )
@@ -542,6 +584,117 @@ function Hyperspace({ count, color }: { count: number; color: string }) {
   )
 }
 
+// ── Telarañas (Marvel) ───────────────────────────────────────────────────
+// "¡Thwip!": una hebra sale disparada desde afuera de la pantalla hacia una
+// esquina y, al pegar, la telaraña se despliega desde esa esquina con un
+// rebote. Dos disparos: arriba a la izquierda y abajo a la derecha. La red se
+// arma por código (radios + hilos que se comban hacia la esquina), así que
+// es nítida a cualquier tamaño.
+const WEB = 230
+function webPath(size: number) {
+  const angles = [0, 15, 30, 45, 60, 75, 90].map((d) => (d * Math.PI) / 180)
+  const radii = [0.18, 0.34, 0.5, 0.67, 0.84].map((r) => r * size)
+  const pt = (a: number, r: number) => [Math.cos(a) * r, Math.sin(a) * r]
+  let d = ''
+  // Radios: de la esquina hacia afuera.
+  for (const a of angles) {
+    const [x, y] = pt(a, size)
+    d += `M0 0 L${x.toFixed(1)} ${y.toFixed(1)} `
+  }
+  // Hilos en espiral: cada tramo entre dos radios se comba hacia la esquina,
+  // que es lo que le da el aspecto de telaraña y no de tablero.
+  for (const r of radii) {
+    for (let i = 0; i < angles.length - 1; i++) {
+      const [x1, y1] = pt(angles[i], r)
+      const [x2, y2] = pt(angles[i + 1], r)
+      const [cx, cy] = pt((angles[i] + angles[i + 1]) / 2, r * 0.86)
+      d += `M${x1.toFixed(1)} ${y1.toFixed(1)} Q${cx.toFixed(1)} ${cy.toFixed(1)} ${x2.toFixed(1)} ${y2.toFixed(1)} `
+    }
+  }
+  return d
+}
+const WEB_D = webPath(WEB)
+
+function Webs() {
+  const { width, height } = useWindowDimensions()
+  const shots = useMemo(
+    () => [
+      // Esquina arriba-izquierda (debajo del botón de volver queda bien: el
+      // botón es vidrio y la red se ve a través).
+      { corner: 'tl' as const, at: 250, from: { x: width * 0.55, y: height * 0.5 } },
+      { corner: 'br' as const, at: 800, from: { x: width * 0.35, y: height * 0.45 } },
+    ].map((s) => ({ ...s, line: new Animated.Value(0), web: new Animated.Value(0) })),
+    [width, height]
+  )
+
+  useEffect(() => {
+    const anims = shots.map((s) =>
+      Animated.sequence([
+        Animated.delay(s.at),
+        // La hebra viaja…
+        Animated.timing(s.line, { toValue: 1, duration: 170, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+        // …y la red se abre con rebote al pegar.
+        Animated.spring(s.web, { toValue: 1, damping: 9, stiffness: 180, mass: 0.6, useNativeDriver: true }),
+      ])
+    )
+    anims.forEach((a) => a.start())
+    const timers = shots.map((s) =>
+      setTimeout(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {}), s.at + 170)
+    )
+    return () => { anims.forEach((a) => a.stop()); timers.forEach(clearTimeout) }
+  }, [shots])
+
+  return (
+    <>
+      {shots.map((s, i) => {
+        const tl = s.corner === 'tl'
+        const cx = tl ? 0 : width
+        const cy = tl ? 0 : height
+        // La hebra: una línea de la "mano" a la esquina que se estira de
+        // golpe y se desvanece cuando la red ya pegó.
+        const dx = cx - s.from.x
+        const dy = cy - s.from.y
+        const len = Math.hypot(dx, dy)
+        const angle = Math.atan2(dy, dx)
+        return (
+          <View key={i} style={StyleSheet.absoluteFill} pointerEvents="none">
+            <Animated.View
+              style={{
+                position: 'absolute',
+                left: s.from.x,
+                top: s.from.y - 1,
+                width: len,
+                height: 2,
+                backgroundColor: 'rgba(255,255,255,0.9)',
+                shadowColor: '#fff', shadowOpacity: 0.8, shadowRadius: 3, shadowOffset: { width: 0, height: 0 },
+                transformOrigin: 'left center',
+                opacity: s.web.interpolate({ inputRange: [0, 0.6, 1], outputRange: [1, 0.4, 0] }),
+                transform: [{ rotate: `${angle}rad` }, { scaleX: s.line }],
+              }}
+            />
+            <Animated.View
+              style={{
+                position: 'absolute',
+                left: tl ? 0 : width - WEB,
+                top: tl ? 0 : height - WEB,
+                width: WEB,
+                height: WEB,
+                transformOrigin: tl ? 'top left' : 'bottom right',
+                opacity: s.web.interpolate({ inputRange: [0, 0.2, 1], outputRange: [0, 1, 1] }),
+                transform: [{ scale: s.web }],
+              }}
+            >
+              <Svg width={WEB} height={WEB} style={tl ? undefined : { transform: [{ rotate: '180deg' }] }}>
+                <Path d={WEB_D} stroke="rgba(255,255,255,0.88)" strokeWidth={1.3} fill="none" strokeLinecap="round" />
+              </Svg>
+            </Animated.View>
+          </View>
+        )
+      })}
+    </>
+  )
+}
+
 // ── Bokeh (plataformas) ──────────────────────────────────────────────────
 // Círculos de luz desenfocados en el color de la marca que suben despacio y
 // se desvanecen, como luces fuera de foco detrás de un plano de cine. Pocos,
@@ -598,6 +751,331 @@ function Bokeh({ colors, count }: { colors: string[]; count: number }) {
           }}
         >
           <SoftFlake size={l.size} id={l.id} color={l.color} />
+        </Animated.View>
+      ))}
+    </>
+  )
+}
+
+// ── Lluvia (DC) ──────────────────────────────────────────────────────────
+// Llovizna en diagonal: trazos finos y rápidos, más tenues los lejanos.
+function Rain({ count }: { count: number }) {
+  const { width, height } = useWindowDimensions()
+  const drops = useMemo(
+    () =>
+      Array.from({ length: count }, () => {
+        const near = Math.random() < 0.3
+        return {
+          x: rand(-60, width + 20),
+          len: near ? rand(22, 34) : rand(12, 20),
+          ms: near ? rand(480, 650) : rand(700, 950),
+          opacity: near ? rand(0.35, 0.55) : rand(0.15, 0.3),
+          start: Math.random(),
+          v: new Animated.Value(0),
+        }
+      }),
+    [count, width]
+  )
+  useEffect(() => {
+    const anims = drops.map((d) => {
+      d.v.setValue(d.start)
+      return Animated.sequence([
+        Animated.timing(d.v, { toValue: 1, duration: d.ms * (1 - d.start), easing: Easing.linear, useNativeDriver: true }),
+        Animated.loop(
+          Animated.sequence([
+            Animated.timing(d.v, { toValue: 0, duration: 0, useNativeDriver: true }),
+            Animated.timing(d.v, { toValue: 1, duration: d.ms, easing: Easing.linear, useNativeDriver: true }),
+          ])
+        ),
+      ])
+    })
+    anims.forEach((a) => a.start())
+    return () => anims.forEach((a) => a.stop())
+  }, [drops])
+  const slant = 0.22 // corrimiento lateral por punto de caída (viento)
+  return (
+    <>
+      {drops.map((d, i) => (
+        <Animated.View
+          key={i}
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: d.x,
+            width: 1.2,
+            height: d.len,
+            borderRadius: 1,
+            backgroundColor: '#C9DAFF',
+            opacity: d.opacity,
+            transform: [
+              { translateY: d.v.interpolate({ inputRange: [0, 1], outputRange: [-d.len, height] }) },
+              { translateX: d.v.interpolate({ inputRange: [0, 1], outputRange: [0, height * slant] }) },
+              { rotate: `${-Math.atan(slant)}rad` },
+            ],
+          }}
+        />
+      ))}
+    </>
+  )
+}
+
+// ── Reflector (DC) ───────────────────────────────────────────────────────
+// Un haz de luz cálida que sube desde abajo y barre el cielo despacio, con
+// el círculo de luz donde pega en las nubes. Sin emblema: solo la luz.
+function Searchlight() {
+  const { width, height } = useWindowDimensions()
+  const sweep = useRef(new Animated.Value(0)).current
+  const on = useRef(new Animated.Value(0)).current
+  useEffect(() => {
+    const a = Animated.parallel([
+      Animated.timing(on, { toValue: 1, duration: 600, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+      Animated.timing(sweep, { toValue: 1, duration: 4600, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+    ])
+    a.start()
+    return () => a.stop()
+  }, [])
+  const beamH = height * 0.95
+  const beamW = width * 0.9
+  const topY = beamW * 0.16
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={{
+        position: 'absolute',
+        // Base del haz abajo, un poco a la izquierda del centro.
+        left: width * 0.42 - beamW / 2,
+        top: height - beamH + 40,
+        width: beamW,
+        height: beamH,
+        opacity: on,
+        transformOrigin: 'bottom center',
+        transform: [{ rotate: sweep.interpolate({ inputRange: [0, 1], outputRange: ['-24deg', '14deg'] }) }],
+      }}
+    >
+      <Svg width={beamW} height={beamH}>
+        <Defs>
+          <SvgLinearGradient id="beam" x1="0" y1="1" x2="0" y2="0">
+            <Stop offset="0" stopColor="#FFF3C4" stopOpacity="0.22" />
+            <Stop offset="0.7" stopColor="#FFF3C4" stopOpacity="0.07" />
+            <Stop offset="1" stopColor="#FFF3C4" stopOpacity="0.02" />
+          </SvgLinearGradient>
+          <RadialGradient id="spot" cx="50%" cy="50%" r="50%">
+            <Stop offset="0" stopColor="#FFF6D6" stopOpacity="0.55" />
+            <Stop offset="0.6" stopColor="#FFF3C4" stopOpacity="0.22" />
+            <Stop offset="1" stopColor="#FFF3C4" stopOpacity="0" />
+          </RadialGradient>
+        </Defs>
+        {/* Haz: angosto abajo, ancho arriba. Tres capas de distinto ancho
+            y opacidad dan bordes suaves (un solo trapecio se veía como un
+            bloque de bordes duros). */}
+        {[0.16, 0.11, 0.06].map((half, i) => (
+          <Path
+            key={i}
+            d={`M${beamW / 2 - 3 - i} ${beamH} L${beamW / 2 + 3 + i} ${beamH} L${beamW / 2 + beamW * half} ${topY} L${beamW / 2 - beamW * half} ${topY} Z`}
+            fill="url(#beam)"
+            opacity={0.45 + i * 0.25}
+          />
+        ))}
+        {/* El círculo de luz en las nubes. */}
+        <Ellipse cx={beamW / 2} cy={topY} rx={beamW * 0.2} ry={beamW * 0.11} fill="url(#spot)" />
+      </Svg>
+    </Animated.View>
+  )
+}
+
+// ── Velas flotantes (Harry Potter) ───────────────────────────────────────
+// Velas suspendidas en el aire en la mitad de arriba, cada una flotando
+// arriba y abajo a su ritmo, con la llama titilando y un halo cálido. Las
+// más chicas (lejanas) son más tenues: da profundidad, como el techo del
+// Gran Comedor.
+function Candles({ count }: { count: number }) {
+  const { width, height } = useWindowDimensions()
+  const candles = useMemo(
+    () =>
+      Array.from({ length: count }, (_, i) => {
+        const depth = rand(0.55, 1.1)
+        return {
+          id: `cd${i}`,
+          // Repartidas en columnas para que no se amontonen.
+          x: ((i + rand(0.15, 0.85)) / count) * width,
+          y: rand(height * 0.07, height * 0.42),
+          depth,
+          bobMs: rand(1800, 2800),
+          bob: rand(4, 9),
+          flickerMs: rand(110, 190),
+          delay: rand(0, 900),
+          inV: new Animated.Value(0),
+          bobV: new Animated.Value(0),
+          flick: new Animated.Value(0),
+        }
+      }),
+    [count, width, height]
+  )
+  useEffect(() => {
+    const anims = candles.flatMap((c) => [
+      Animated.sequence([
+        Animated.delay(c.delay),
+        Animated.timing(c.inV, { toValue: 1, duration: 700, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+      ]),
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(c.bobV, { toValue: 1, duration: c.bobMs, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+          Animated.timing(c.bobV, { toValue: 0, duration: c.bobMs, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+        ])
+      ),
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(c.flick, { toValue: 1, duration: c.flickerMs, useNativeDriver: true }),
+          Animated.timing(c.flick, { toValue: 0.35, duration: c.flickerMs * 1.3, useNativeDriver: true }),
+          Animated.timing(c.flick, { toValue: 0.8, duration: c.flickerMs * 0.8, useNativeDriver: true }),
+          Animated.timing(c.flick, { toValue: 0, duration: c.flickerMs * 1.1, useNativeDriver: true }),
+        ])
+      ),
+    ])
+    anims.forEach((a) => a.start())
+    return () => anims.forEach((a) => a.stop())
+  }, [candles])
+
+  const W = 9 // ancho de la vela a escala 1
+  const H = 30
+  return (
+    <>
+      {candles.map((c) => (
+        <Animated.View
+          key={c.id}
+          style={{
+            position: 'absolute',
+            left: c.x,
+            top: c.y,
+            alignItems: 'center',
+            opacity: Animated.multiply(c.inV, 0.45 + (c.depth - 0.55) * 0.9),
+            transform: [
+              { translateY: c.bobV.interpolate({ inputRange: [0, 1], outputRange: [-c.bob, c.bob] }) },
+              { scale: c.depth },
+            ],
+          }}
+        >
+          {/* Halo cálido alrededor de la llama */}
+          <Animated.View
+            style={{
+              position: 'absolute', top: -22,
+              opacity: c.flick.interpolate({ inputRange: [0, 1], outputRange: [0.55, 0.9] }),
+            }}
+          >
+            <SoftFlake size={46} id={`${c.id}h`} color="#FFC861" />
+          </Animated.View>
+          {/* Llama */}
+          <Animated.View
+            style={{
+              marginBottom: 1,
+              transformOrigin: 'bottom center',
+              transform: [
+                { scaleY: c.flick.interpolate({ inputRange: [0, 1], outputRange: [0.85, 1.12] }) },
+                { scaleX: c.flick.interpolate({ inputRange: [0, 1], outputRange: [1.05, 0.92] }) },
+              ],
+            }}
+          >
+            <Svg width={8} height={13} viewBox="0 0 8 13">
+              <Defs>
+                <RadialGradient id={`${c.id}f`} cx="50%" cy="70%" r="60%">
+                  <Stop offset="0" stopColor="#FFFFFF" />
+                  <Stop offset="0.35" stopColor="#FFE9A8" />
+                  <Stop offset="1" stopColor="#FF9A2E" />
+                </RadialGradient>
+              </Defs>
+              <Path d="M4 0 C5.6 3 8 5.6 8 8.6 C8 11 6.2 13 4 13 C1.8 13 0 11 0 8.6 C0 5.6 2.4 3 4 0 Z" fill={`url(#${c.id}f)`} />
+            </Svg>
+          </Animated.View>
+          {/* Mecha y cuerpo de cera, con una gota chorreada */}
+          <View style={{ width: 1.2, height: 2, backgroundColor: '#3A2A1A' }} />
+          <View style={{ width: W, height: H, borderRadius: 1.5, backgroundColor: '#F1E6CC', overflow: 'hidden' }}>
+            <View style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: W * 0.35, backgroundColor: 'rgba(120,90,50,0.18)' }} />
+            <View style={{ position: 'absolute', left: 1.5, top: 0, width: 2, height: 9, borderRadius: 1, backgroundColor: '#FBF4E2' }} />
+          </View>
+        </Animated.View>
+      ))}
+    </>
+  )
+}
+
+// ── Hechizo (Harry Potter) ───────────────────────────────────────────────
+// Una estela de chispas doradas que sale de abajo a la izquierda, cruza la
+// pantalla en arco y estalla arriba a la derecha. Cada chispa nace sobre la
+// curva, se queda un instante y cae apagándose, como la estela de una varita.
+function Spell({ at }: { at: number }) {
+  const { width, height } = useWindowDimensions()
+  const TRAVEL = 1100
+  const sparks = useMemo(() => {
+    const p0 = { x: width * 0.08, y: height * 0.82 }
+    const c = { x: width * 0.32, y: height * 0.12 }
+    const p1 = { x: width * 0.84, y: height * 0.3 }
+    const bez = (t: number) => ({
+      x: (1 - t) ** 2 * p0.x + 2 * (1 - t) * t * c.x + t ** 2 * p1.x,
+      y: (1 - t) ** 2 * p0.y + 2 * (1 - t) * t * c.y + t ** 2 * p1.y,
+    })
+    const trail = Array.from({ length: 44 }, (_, i) => {
+      const t = i / 43
+      const pt = bez(t)
+      return {
+        ...pt,
+        delay: t * TRAVEL,
+        dx: rand(-10, 10),
+        dy: rand(14, 40), // caen un poco al apagarse
+        size: rand(5, 11),
+        life: rand(650, 1000),
+        color: pick(['#FFE7A3', '#FFD36B', '#FFFFFF', '#F5C542']),
+        v: new Animated.Value(0),
+      }
+    })
+    // Estallido final: chispas que salen en todas direcciones.
+    const burst = Array.from({ length: 18 }, (_, i) => {
+      const ang = (i / 18) * Math.PI * 2 + rand(-0.15, 0.15)
+      const dist = rand(40, 95)
+      return {
+        ...p1,
+        delay: TRAVEL,
+        dx: Math.cos(ang) * dist,
+        dy: Math.sin(ang) * dist + 20,
+        size: rand(6, 12),
+        life: rand(800, 1150),
+        color: pick(['#FFE7A3', '#FFFFFF', '#F5C542']),
+        v: new Animated.Value(0),
+      }
+    })
+    return [...trail, ...burst]
+  }, [width, height])
+
+  useEffect(() => {
+    const anims = sparks.map((s) =>
+      Animated.sequence([
+        Animated.delay(at + s.delay),
+        Animated.timing(s.v, { toValue: 1, duration: s.life, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+      ])
+    )
+    anims.forEach((a) => a.start())
+    const t1 = setTimeout(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {}), at)
+    const t2 = setTimeout(() => Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {}), at + TRAVEL)
+    return () => { anims.forEach((a) => a.stop()); clearTimeout(t1); clearTimeout(t2) }
+  }, [sparks])
+
+  return (
+    <>
+      {sparks.map((s, i) => (
+        <Animated.View
+          key={i}
+          style={{
+            position: 'absolute',
+            left: s.x - s.size / 2,
+            top: s.y - s.size / 2,
+            opacity: s.v.interpolate({ inputRange: [0, 0.08, 0.6, 1], outputRange: [0, 1, 0.7, 0] }),
+            transform: [
+              { translateX: s.v.interpolate({ inputRange: [0, 1], outputRange: [0, s.dx] }) },
+              { translateY: s.v.interpolate({ inputRange: [0, 1], outputRange: [0, s.dy] }) },
+              { scale: s.v.interpolate({ inputRange: [0, 0.1, 1], outputRange: [0.3, 1.2, 0.4] }) },
+            ],
+          }}
+        >
+          <SymbolView name="sparkle" tintColor={s.color} style={{ width: s.size, height: s.size }} />
         </Animated.View>
       ))}
     </>

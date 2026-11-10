@@ -220,6 +220,46 @@ const THEMES: Record<string, { name: string; rows: ThemeRow[] }> = {
 }
 const THEME_ROW_MIN = 6
 
+// ── Harry Potter / el mundo mágico ───────────────────────────────────────
+// Curada a mano: la saga en orden, lo que vino después (Animales fantásticos,
+// el reencuentro, la serie de HBO), y para seguir: películas y series con
+// magia. IDs de TMDB verificados uno por uno.
+THEMES.harrypotter = {
+  name: 'Harry Potter',
+  rows: [
+    {
+      title: 'La saga completa', type: 'movie',
+      // De la piedra filosofal a las reliquias de la muerte, en orden.
+      ids: [671, 672, 673, 674, 675, 767, 12444, 12445],
+    },
+    {
+      title: 'Más del mundo mágico', type: 'movie', style: 'backdrop',
+      // Animales fantásticos 1–3, la serie de HBO, Regreso a Hogwarts, Una
+      // historia de magia, Wizards of Baking y el Torneo de las Casas.
+      items: [
+        ['movie', 259316], ['movie', 338952], ['movie', 338953], ['tv', 224377],
+        ['movie', 899082], ['movie', 482408], ['tv', 254514], ['tv', 133723],
+      ],
+    },
+    {
+      title: 'Si te gusta Harry Potter', type: 'movie',
+      // Narnia, Percy Jackson, La brújula dorada, Spiderwick, Miss Peregrine,
+      // Stardust, El aprendiz de brujo, Terabithia, La casa con un reloj…,
+      // Wicked, Matilda.
+      ids: [411, 32657, 2268, 8204, 283366, 2270, 27022, 1265, 463821, 402431, 10830],
+    },
+    {
+      title: 'Series con magia', type: 'tv', style: 'backdrop',
+      // His Dark Materials, Sombra y hueso, Magicians, El descubrimiento de las
+      // brujas, Percy Jackson, Merlina, Sabrina, La peor bruja.
+      ids: [68507, 85720, 64432, 77236, 103540, 119051, 79242, 69581],
+    },
+    { title: 'Fantasía que hechiza', type: 'movie', sort: 'top', style: 'ranked', params: { with_genres: 14, 'vote_count.gte': 5000 } },
+    // wizard, sorcery, magic school
+    { title: 'Magos y escuelas de magia', type: 'movie', params: { with_keywords: '177912|5147|291549', 'vote_count.gte': 300 } },
+  ],
+}
+
 // ── RuPaul's Drag Race ───────────────────────────────────────────────────
 // La franquicia, curada a mano: primero el universo original, después cada
 // versión del mundo (México primero), y alrededor el cine, el ballroom y lo
