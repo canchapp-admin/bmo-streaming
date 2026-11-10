@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   parseStream, parseCacheState, cacheSignalHealth, parseYear, parseEpisodeTag,
   parseSize, parseLangs, rejectionOf, bitrateMbps, decodePenalty, scoreStream,
-  rankCandidates, selectRunnable, titleOverlap,
+  rankCandidates, selectRunnable, autoPlayable, rankForDownload, titleOverlap,
   type MediaRef, type TorrentioStream, type ParsedStream,
 } from './torrentio.parse'
 
@@ -533,5 +533,164 @@ describe('selectRunnable — filtro de cacheados con degradación', () => {
       mk('[RD+] Torrentio', 'B.2020.2160p.AV1.mkv'), // el único cacheado es AV1 → rechazado antes
     ], movieRef({ year: 2020 }))
     expect(selectRunnable(r)).toHaveLength(0)
+  })
+})
+
+// ── Estrenos, idiomas ajenos y preferencia de español ───────────────────────
+
+const cached = (file: string) => stream(file, { name: '[RD+] Torrentio' })
+const uncached = (file: string) => stream(file, { name: '[RD download] Torrentio' })
+const sup = () => movieRef({ title: 'Superman', originalTitle: 'Superman', year: 2025, runtimeMin: 130 })
+
+describe('copias de cine', () => {
+  test.each([
+    'Superman.2025.HQCAM.x264.mkv',
+    'Superman.2025.HQ.CAM.1080p.mkv',
+    'Superman.2025.HD-TS.x264.mkv',
+    'Superman.2025.TC.x264.mkv',
+    'Superman.2025.CAM-Rip.x264.mkv',
+  ])('%s se marca como cam', (name) => {
+    expect(parse(name).releaseKind).toBe('cam')
+  })
+
+  test('con un release limpio disponible, la copia de cine ni se lista', () => {
+    const r = rankCandidates(
+      [cached('Superman.2025.HDCAM.1080p.x264.mkv'), cached('Superman.2025.1080p.WEB-DL.x264.mkv')], sup())
+    const runnable = selectRunnable(r)
+    expect(runnable).toHaveLength(1)
+    expect(runnable[0].poor).toBeNull()
+  })
+
+  test('si solo hay copias de cine, se listan pero NO se autoreproducen', () => {
+    const r = rankCandidates([cached('Superman.2025.HDCAM.1080p.x264.mkv')], sup())
+    const runnable = selectRunnable(r)
+    expect(runnable).toHaveLength(1)
+    expect(runnable[0].poor).toBe('cam')
+    expect(autoPlayable(runnable)).toHaveLength(0)
+  })
+
+  test('un limpio NO cacheado no cuenta como alternativa (no se puede reproducir)', () => {
+    const r = rankCandidates(
+      [cached('Superman.2025.HDCAM.1080p.x264.mkv'), uncached('Superman.2025.1080p.BluRay.x264.mkv')], sup())
+    const runnable = selectRunnable(r)
+    expect(runnable.map((c) => c.poor)).toEqual(['cam'])
+    expect(autoPlayable(runnable)).toHaveLength(0)
+  })
+
+  test('screener también es pobre', () => {
+    const r = rankCandidates([cached('Superman.2025.DVDSCR.x264.mkv')], sup())
+    expect(r.ranked[0].poor).toBe('screener')
+  })
+})
+
+describe('audio ajeno (ruso, hindi…)', () => {
+  test.each([
+    ['Superman.2025.1080p.Hindi.x264.mkv', 'indian'],
+    ['Superman.2025.1080p.Tamil.x264.mkv', 'indian'],
+    ['Superman.2025.1080p.RUS.x264.mkv', 'russian'],
+    ['Супермен.2025.1080p.BDRip.mkv', 'russian'],
+    ['Superman.2025.1080p.KOR.x264.mkv', 'korean'],
+  ])('%s → %s', (name, tag) => {
+    expect(parse(name).langs.has(tag as any)).toBe(true)
+  })
+
+  test('un release SOLO en hindi/ruso es pobre para una peli inglesa', () => {
+    expect(scoreStream(parse('Superman.2025.1080p.Hindi.x264.mkv'), sup()).poor).toBe('foreign-audio')
+    expect(scoreStream(parse('Superman.2025.1080p.RUS.x264.mkv'), sup()).poor).toBe('foreign-audio')
+  })
+
+  test('con audio original o español además del ruso, NO es pobre', () => {
+    expect(scoreStream(parse('Superman.2025.1080p.RUS.ENG.x264.mkv'), sup()).poor).toBeNull()
+    expect(scoreStream(parse('Superman.2025.1080p.Dual.Lat.RUS.x264.mkv'), sup()).poor).toBeNull()
+  })
+
+  test('para una peli hindi, el audio hindi ES el original y no se castiga', () => {
+    const ref = movieRef({ title: 'Dangal', originalTitle: 'Dangal', originalLanguage: 'hi', year: 2016 })
+    expect(scoreStream(parse('Dangal.2016.1080p.Hindi.x264.mkv'), ref).poor).toBeNull()
+  })
+
+  test('sin etiqueta de idioma no se asume nada', () => {
+    expect(scoreStream(parse('Superman.2025.1080p.x264.mkv'), sup()).poor).toBeNull()
+  })
+
+  test('el hindi cacheado pierde y desaparece frente a un original cacheado', () => {
+    const r = rankCandidates(
+      [cached('Superman.2025.1080p.Hindi.x264.mkv'), cached('Superman.2025.1080p.BluRay.x264.mkv')], sup())
+    const runnable = selectRunnable(r)
+    expect(runnable).toHaveLength(1)
+    expect(runnable[0].parsed.filename).toContain('BluRay')
+  })
+})
+
+describe('preferencia de español', () => {
+  const ref = () => movieRef({ title: 'Superman', originalTitle: 'Superman', year: 2020, runtimeMin: 130 })
+  const lat = 'Superman.2020.1080p.WEB-DL.Latino.x264.mkv'
+  const eng = 'Superman.2020.1080p.WEB-DL.English.x264.mkv'
+
+  test('por defecto el idioma NO mueve el ranking', () => {
+    expect(scoreStream(parse(lat), ref()).parts.langPref).toBeUndefined()
+  })
+
+  test('pidiendo latino, el latino gana a calidad parecida', () => {
+    const r = rankCandidates([cached(eng), cached(lat)], ref(), 'high', 'latino')
+    expect(r.ranked[0].parsed.filename).toBe(lat)
+  })
+
+  test('pidiendo original, gana el original sobre un doblaje solo-español', () => {
+    const r = rankCandidates([cached(lat), cached(eng)], ref(), 'high', 'original')
+    expect(r.ranked[0].parsed.filename).toBe(eng)
+  })
+
+  test('el bonus NO rescata un latino malo: una copia de cine sigue perdiendo', () => {
+    const cam = 'Superman.2020.HDCAM.1080p.Latino.x264.mkv'
+    const r = rankCandidates([cached(cam), cached(eng)], ref(), 'high', 'latino')
+    expect(r.ranked[0].parsed.filename).toBe(eng)
+    expect(selectRunnable(r).map((c) => c.parsed.filename)).toEqual([eng])
+  })
+
+  test('el bonus NO rescata un 4K reescalado', () => {
+    const fake = 'Superman.2020.4Kreescalado.2160p.Latino.x265.mkv'
+    const r = rankCandidates([cached(fake), cached(eng)], ref(), 'high', 'latino')
+    expect(r.ranked[0].parsed.filename).toBe(eng)
+  })
+})
+
+describe('identidad del título sin año', () => {
+  test('sin año y sin ninguna palabra en común → se rechaza', () => {
+    expect(rejectionOf(parse('Totalmente.Otra.Pelicula.1080p.x264.mkv'), movieRef())).toBe('title-mismatch')
+  })
+
+  test('sin año pero con el título → pasa (no tirar releases en español legítimos)', () => {
+    expect(rejectionOf(parse(FILE.fightClubUpscale), movieRef())).toBeNull()
+  })
+
+  test('solapamiento parcial penaliza menos que cero', () => {
+    const ref = movieRef({ title: 'La casa del dragon', originalTitle: 'House of the Dragon', year: 2020 })
+    expect(scoreStream(parse('Dragon.Ball.2020.1080p.x264.mkv'), ref).parts.title).toBe(-40)
+  })
+})
+
+describe('rankForDownload — peso antes que calidad de streaming', () => {
+  const ref = () => movieRef({ title: 'Superman', originalTitle: 'Superman', year: 2020, runtimeMin: 130 })
+  const rank = (...files: string[]) =>
+    rankForDownload(rankCandidates(files.map((f) => cached(f)), ref()).ranked).map((c) => c.parsed.filename)
+
+  test('un 1080p liviano gana a un 1080p enorme aunque este puntúe parecido', () => {
+    const light = 'Superman.2020.1080p.WEB-DL.x265.mkv 💾 2.4 GB'
+    const heavy = 'Superman.2020.1080p.BluRay.x264.mkv 💾 14 GB'
+    expect(rank(heavy, light)[0]).toBe(light)
+  })
+
+  test('el 4K pierde contra un 1080p para descargar', () => {
+    const k4 = 'Superman.2020.2160p.WEB-DL.x265.mkv 💾 9 GB'
+    const hd = 'Superman.2020.1080p.WEB-DL.x264.mkv 💾 3 GB'
+    expect(rank(k4, hd)[0]).toBe(hd)
+  })
+
+  test('no revive lo pobre: lo que ya se filtró no vuelve', () => {
+    const r = rankCandidates([cached('Superman.2020.HDCAM.x264.mkv 💾 0.8 GB'), cached('Superman.2020.1080p.BluRay.x264.mkv 💾 6 GB')], ref())
+    const out = rankForDownload(autoPlayable(selectRunnable(r)))
+    expect(out).toHaveLength(1)
+    expect(out[0].poor).toBeNull()
   })
 })

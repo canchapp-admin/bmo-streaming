@@ -12,9 +12,10 @@
 // que es puro y está cubierto por tests.
 import { tmdbService } from '../tmdb/tmdb.service'
 import { TTLCache } from './cache'
+import { rdGuard, classifyStatus, classifyPlaceholder, redactSecrets, interpretUser, type AccountHealth } from './rd.guard'
 import {
-  rankCandidates, selectRunnable, parseCacheState,
-  type AudioTag, type HwTier, type MediaRef, type ScoredCandidate, type TorrentioStream,
+  rankCandidates, selectRunnable, autoPlayable, rankForDownload, parseCacheState,
+  type AudioTag, type HwTier, type LangPreference, type MediaRef, type PoorReason, type ScoredCandidate, type TorrentioStream,
 } from './torrentio.parse'
 
 // Etiqueta de idioma del audio para el cliente. "Español" cubre el ambiguo
@@ -314,21 +315,37 @@ async function followResolveUrl(startUrl: string): Promise<string | null> {
       await r.body?.cancel().catch(() => {})
       if (!loc) {
         // Sin más redirects: si la respuesta fue exitosa, esta ES la URL final.
-        if (r.status < 200 || r.status >= 400) return null
-        return isTorrentioErrorPlaceholder(url) ? null : url
+        const bad = classifyStatus(r.status)
+        if (bad) {
+          const ra = Number(r.headers.get('retry-after'))
+          rdGuard.recordFailure(bad, `HTTP ${r.status} ${redactSecrets(new URL(url).host)}`, ra > 0 ? ra * 1000 : undefined)
+          return null
+        }
+        return failIfPlaceholder(url)
       }
       url = new URL(loc, url).toString()
-      if (isTorrentioErrorPlaceholder(url)) return null
+      if (isTorrentioErrorPlaceholder(url)) return failIfPlaceholder(url)
     }
-    return isTorrentioErrorPlaceholder(url) ? null : url
-  } catch {
+    return failIfPlaceholder(url)
+  } catch (e) {
+    rdGuard.recordFailure('network', redactSecrets((e as Error).message ?? 'error'))
     return null
   }
 }
 
+// Devuelve la URL si es válida; si es un placeholder de error de Torrentio la
+// descarta y deja registrado POR QUÉ (cuenta/acceso vs. problema de ese torrent).
+function failIfPlaceholder(url: string): string | null {
+  if (!isTorrentioErrorPlaceholder(url)) return url
+  const { reason, file } = classifyPlaceholder(url)
+  rdGuard.recordFailure(reason, `placeholder ${file}`)
+  if (reason === 'auth') console.error(`[debrid] ⚠️ Torrentio devolvió un placeholder de cuenta (${file}) — revisar token/premium/IP en Real-Debrid`)
+  return null
+}
+
 export const debridEnabled = activeSources().length > 0
 
-export type DebridResult = { url: string; label: string; language: string; hasLatinoAlternative: boolean }
+export type DebridResult = { url: string; label: string; language: string; hasLatinoAlternative: boolean; sizeGB: number | null }
 
 export type DebridRequest = {
   type: 'movie' | 'tv'
@@ -342,6 +359,9 @@ export type DebridRequest = {
   episode?: number
   // Capacidad de decode del dispositivo (Fire TV Stick = 'low' → sin 4K/10-bit).
   hwTier?: HwTier
+  // Audio que pidió el usuario. 'latino' sube los releases en español en el
+  // ranking. DEBE ser el mismo al listar y al elegir por índice: cambia el orden.
+  lang?: LangPreference
 }
 
 // Carrera por olas en vez de lanzar todos los candidatos de una.
@@ -360,7 +380,9 @@ export type DebridRequest = {
 // pensado cuando podían entrar no-cacheados lentos; ya no es el caso.)
 export type Wave = { count: number; waitMs: number }
 const WAVES: Wave[] = [
-  { count: 4, waitMs: 2500 },
+  // 3 (antes 4): cada candidato cuesta varias llamadas a RD sobre una cuenta
+  // compartida con tope de 250 req/min; 3 siguen dando margen de sobra.
+  { count: 3, waitMs: 2500 },
   { count: 8, waitMs: 4000 },
 ]
 
@@ -417,6 +439,10 @@ export type SourceOption = {
   sizeGB: number | null
   cached: boolean | null
   langs: string[]
+  // Procedencia (cam/web/bluray…) y por qué sería un mal candidato, para que el
+  // cliente pueda mostrar una etiqueta ("Copia de cine") en vez de dejarlo a ciegas.
+  release: string | null
+  poor: PoorReason | null
 }
 
 // Lista de fuentes ejecutables, en el mismo orden que usa el resolver — el
@@ -432,6 +458,8 @@ export async function listDebridSources(req: DebridRequest): Promise<SourceOptio
     sizeGB: c.parsed.sizeGB,
     cached: c.parsed.cached,
     langs: [...c.parsed.langs],
+    release: c.parsed.releaseKind,
+    poor: c.poor,
   }))
 }
 
@@ -441,7 +469,7 @@ async function rankRunnable(req: DebridRequest): Promise<ScoredCandidate[]> {
   const imdbId = req.imdbId ?? await imdbIdOf(req.type, req.tmdbId)
   if (!imdbId) return []
   const streams = await fetchStreamsCached(imdbId, req.type, req.season, req.episode)
-  return selectRunnable(rankCandidates(streams, req.media, req.hwTier))
+  return selectRunnable(rankCandidates(streams, req.media, req.hwTier, req.lang))
 }
 
 /**
@@ -504,9 +532,19 @@ export async function resolveDebridStream(
   req: DebridRequest,
   // Índice dentro de listDebridSources(). Cuando viene, se resuelve ESA fuente
   // en vez de correr la carrera — es el selector de calidad del reproductor.
-  pick?: number
+  pick?: number,
+  // forDownload: ordena por peso en vez de por calidad de streaming (ver
+  // rankForDownload). Solo afecta a la carrera automática, no a `pick`.
+  opts: { forDownload?: boolean } = {}
 ): Promise<DebridResult | null> {
   if (!activeSources().length) return null
+  // Breaker: RD está limitando, la cuenta falla o venimos de una racha de
+  // resoluciones vacías. Insistir solo empeora el bloqueo; el resolver cae a scrapers.
+  if (!rdGuard.allow()) {
+    const g = rdGuard.snapshot()
+    console.error(`[debrid] breaker abierto (${g.openReason}) — reintenta en ${Math.ceil(g.retryInMs / 1000)}s`)
+    return null
+  }
 
   const t0 = Date.now()
   const imdbId = req.imdbId ?? await imdbIdOf(req.type, req.tmdbId)
@@ -514,7 +552,7 @@ export async function resolveDebridStream(
 
   const streams = await fetchStreamsCached(imdbId, req.type, req.season, req.episode)
   const tFetch = Date.now() - t0
-  const r = rankCandidates(streams, req.media, req.hwTier)
+  const r = rankCandidates(streams, req.media, req.hwTier, req.lang)
 
   if (r.cacheSignal === 'absent' && streams.length > 0) {
     // Torrentio cambió el formato del marcador de cacheado: seguimos andando
@@ -541,6 +579,7 @@ export async function resolveDebridStream(
     if (!chosen) return null
     try {
       const out = await tryCandidate(chosen)
+      rdGuard.recordSuccess()
       const cp = out.c.parsed
       console.error(`[debrid] fuente elegida #${pick} → ${cp.filename}`)
       return {
@@ -548,6 +587,7 @@ export async function resolveDebridStream(
         label: cp.filename,
         language: debridLanguageLabel(cp.langs),
         hasLatinoAlternative: r.hasLatinoAlternative,
+        sizeGB: cp.sizeGB,
       }
     } catch {
       console.error(`[debrid] la fuente elegida #${pick} no resolvió`)
@@ -555,12 +595,27 @@ export async function resolveDebridStream(
     }
   }
 
-  const tRace = Date.now()
-  const winner = await raceInWaves(runnable, WAVES, tryCandidate)
-  if (!winner) {
-    console.error(`[debrid] torrentio ${tFetch}ms + carrera ${Date.now() - tRace}ms — ninguno de ${runnable.length} resolvió`)
+  // Reproducción automática: nunca una copia de cine ni un doblaje ajeno. Si lo
+  // único cacheado es eso (típico de un estreno), se devuelve null y el resolver
+  // prueba los scrapers; el usuario aún puede elegirlo a mano desde el selector.
+  const auto0 = autoPlayable(runnable)
+  const auto = opts.forDownload ? rankForDownload(auto0) : auto0
+  if (!auto.length) {
+    console.error(
+      `[debrid] ${runnable.length} cacheados pero todos "pobres" ` +
+      `(${[...new Set(runnable.map((c) => c.poor))].join(', ')}) — no se autoreproduce`
+    )
     return null
   }
+
+  const tRace = Date.now()
+  const winner = await raceInWaves(auto, WAVES, tryCandidate)
+  if (!winner) {
+    console.error(`[debrid] torrentio ${tFetch}ms + carrera ${Date.now() - tRace}ms — ninguno de ${runnable.length} resolvió`)
+    rdGuard.recordExhausted()
+    return null
+  }
+  rdGuard.recordSuccess()
 
   const p = winner.c.parsed
   console.error(
@@ -573,6 +628,7 @@ export async function resolveDebridStream(
     label: p.filename,
     language: debridLanguageLabel(p.langs),
     hasLatinoAlternative: r.hasLatinoAlternative,
+    sizeGB: p.sizeGB,
   }
 }
 
@@ -617,7 +673,7 @@ export async function debugTorrentio(
   )
 
   const streams = await fetchStreams(imdbId, type, season, episode)
-  const r = rankCandidates(streams, media)
+  const r = rankCandidates(streams, media, 'high', lang)
   const runnable = selectRunnable(r)
 
   return {
@@ -651,8 +707,51 @@ export async function debugTorrentio(
       hdr: c.parsed.hdr,
       sizeGB: c.parsed.sizeGB,
       langs: [...c.parsed.langs],
+      poor: c.poor,
       parts: Object.fromEntries(Object.entries(c.parts).map(([k, v]) => [k, Math.round(v)])),
     })),
     rejected: r.rejected.slice(0, 15),
   }
+}
+
+// ── Salud de la cuenta de Real-Debrid ──
+//
+// GET /user de la API de RD (con Bearer, no query param) dice si la cuenta sigue
+// siendo premium y cuántos días le quedan. Si vence, TODA resolución cae en
+// silencio a los scrapers: esto permite verlo (y alertar) antes de que pase.
+// Cacheado 10 min: es un chequeo de salud, no hace falta golpear a RD por cada visita.
+const RD_API = 'https://api.real-debrid.com/rest/1.0'
+const healthCache = new TTLCache<AccountHealth>(10 * 60_000)
+
+async function fetchAccountHealth(): Promise<AccountHealth> {
+  if (!DEBRID_KEY) return { ok: false, error: 'DEBRID_KEY no configurada' }
+  try {
+    const r = await fetch(`${RD_API}/user`, {
+      headers: { Authorization: `Bearer ${DEBRID_KEY}` },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT),
+    })
+    if (r.status === 401) return { ok: false, error: 'Token inválido o vencido (RD error 8)' }
+    if (r.status === 403) return { ok: false, error: 'Cuenta bloqueada o no premium (RD 403)' }
+    if (r.status === 429) {
+      rdGuard.recordFailure('rate_limited', 'HTTP 429 en /user')
+      return { ok: false, error: 'Rate limit de RD (429)' }
+    }
+    if (!r.ok) return { ok: false, error: `RD respondió HTTP ${r.status}` }
+    const h = interpretUser((await r.json()) as { type?: string; premium?: number; expiration?: string })
+    if (h.warning) console.error(`[debrid] ⚠️ ${h.warning}`)
+    return h
+  } catch (e) {
+    return { ok: false, error: redactSecrets((e as Error).message ?? 'error de red') }
+  }
+}
+
+export async function debridHealth() {
+  // Un resultado con error NO se cachea: TTLCache no persiste los fallos si el
+  // producer lanza, así que se reintenta en la próxima consulta.
+  const account = await healthCache.resolve('user', async () => {
+    const h = await fetchAccountHealth()
+    if (h.error) throw new Error(h.error)
+    return h
+  }).catch((e: Error): AccountHealth => ({ ok: false, error: e.message }))
+  return { enabled: !!DEBRID_KEY, account, guard: rdGuard.snapshot() }
 }
