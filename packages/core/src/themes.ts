@@ -40,6 +40,23 @@ export type SearchTheme = {
 
 export const SEARCH_THEMES: SearchTheme[] = [
   {
+    key: 'simpsons',
+    name: 'Los Simpson',
+    tagline: 'Springfield completo: la serie, la película y los cortos',
+    aliases: [
+      'simpsons', 'simpson', 'los simpson', 'los simpsons', 'the simpsons', 'simsons', 'simpsom',
+      'homero', 'homero simpson', 'homer simpson', 'bart simpson', 'lisa simpson', 'marge simpson',
+      'maggie simpson', 'springfield',
+    ],
+    // El cielo celeste de la apertura y el amarillo de la familia.
+    colors: ['#2F8FE0', '#FFD90F'],
+    symbol: 'tv.fill',
+    art: '/jIArNHIekrCSVgdMbKPAXpPY03Y.jpg', // Homero, Lisa y Bart sobre amarillo
+    heroArt: '/4InwNJ8yl1L4kf7rZvPHWJFQpSV.jpg', // la familia en el sillón
+    logo: '/hKuiXx5eNObCLKe9BOl7O7ulKyg.png', // "Los Simpson", el amarillo de siempre
+    franchise: true,
+  },
+  {
     key: 'harrypotter',
     name: 'Harry Potter',
     tagline: 'El mundo mágico, de la piedra filosofal a los animales fantásticos',

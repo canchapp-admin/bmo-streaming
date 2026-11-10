@@ -54,6 +54,11 @@ const FRANCHISES: Platform[] = [
     key: 'rupaul', name: "RuPaul's Drag Race", href: '/theme/rupaul',
     logo: '/9sSyE71HAlNLwaReiLIey6L7tYc.png', bg: ['#FF2E93', '#5B1A9E'], logoW: 0.8,
   },
+  // Los Simpson: el logo amarillo sobre el cielo celeste de la apertura.
+  {
+    key: 'simpsons', name: 'Los Simpson', href: '/theme/simpsons',
+    logo: '/hKuiXx5eNObCLKe9BOl7O7ulKyg.png', bg: ['#5DB4F0', '#1F6FC2'], logoW: 0.78,
+  },
   // Harry Potter: el logo en dorado sobre el azul de la noche en Hogwarts.
   {
     key: 'harrypotter', name: 'Harry Potter', href: '/theme/harrypotter',

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Animated, Easing, StyleSheet, View, useWindowDimensions } from 'react-native'
 import { SymbolView } from 'expo-symbols'
 import * as Haptics from 'expo-haptics'
-import Svg, { Circle, Defs, Ellipse, LinearGradient as SvgLinearGradient, Path, RadialGradient, Stop } from 'react-native-svg'
+import Svg, { Circle, Defs, Ellipse, LinearGradient as SvgLinearGradient, Path, RadialGradient, Rect, Stop } from 'react-native-svg'
 import { useReduceMotion } from '@/lib/useReduceMotion'
 
 // Animación de bienvenida de cada especial y de cada plataforma/franquicia: al entrar a Navidad nieva un
@@ -23,6 +23,7 @@ type Shape =
   | { kind: 'petal'; colors: string[] } // óvalo que gira (pétalos, hojas)
   | { kind: 'confetti'; colors: string[] } // tira que gira y "da vueltas" en 3D
   | { kind: 'symbol'; name: string; colors: string[] }
+  | { kind: 'donut'; colors: string[] } // dona glaseada con chispitas (colors = glaseado)
 
 type Effect =
   | { type: 'fall' | 'rise'; count: number; shape: Shape; size: [number, number]; speed: [number, number]; sway: number }
@@ -31,6 +32,7 @@ type Effect =
   | { type: 'bats'; count: number; rim?: string; fill?: string; delayMs?: number }
   | { type: 'rain'; count: number }
   | { type: 'candles'; count: number }
+  | { type: 'clouds'; count: number }
   | { type: 'spell'; at: number }
   | { type: 'searchlight' }
   | { type: 'snow'; count: number }
@@ -41,6 +43,16 @@ type Effect =
 // Qué animación tiene cada especial. Los que no figuran no tienen.
 // Un especial puede combinar varias (Halloween: murciélagos + brasas).
 const EFFECTS: Record<string, Effect | Effect[]> = {
+  // Los Simpson: como la apertura, se abren las nubes del cielo celeste y
+  // empiezan a caer donas glaseadas con chispitas, girando.
+  simpsons: [
+    { type: 'clouds', count: 9 },
+    {
+      type: 'fall', count: 22,
+      shape: { kind: 'donut', colors: ['#FF7EB6', '#FF9BC8', '#7A4A2A', '#FFF4E0'] },
+      size: [20, 36], speed: [3600, 5600], sway: 26,
+    },
+  ],
   // Harry Potter: el Gran Comedor sin dibujar a nadie. Velas que flotan y
   // titilan sobre el castillo de noche, un cielo con estrellas y, al segundo,
   // un hechizo: una estela de chispas doradas que cruza en arco y estalla.
@@ -175,6 +187,7 @@ const TIMING: Record<string, { show: number; fade: number }> = {
   marvel: { show: 4400, fade: 1100 },
   dc: { show: 4800, fade: 1300 },
   harrypotter: { show: 5600, fade: 1600 },
+  simpsons: { show: 5000, fade: 1400 },
 }
 
 const rand = (min: number, max: number) => min + Math.random() * (max - min)
@@ -209,6 +222,7 @@ export function ThemeEffect({ themeKey }: { themeKey: string }) {
         : e.type === 'bats' ? <Bats key={i} count={e.count} rim={e.rim} fill={e.fill} delayMs={e.delayMs} />
         : e.type === 'rain' ? <Rain key={i} count={e.count} />
         : e.type === 'candles' ? <Candles key={i} count={e.count} />
+        : e.type === 'clouds' ? <Clouds key={i} count={e.count} />
         : e.type === 'spell' ? <Spell key={i} at={e.at} />
         : e.type === 'searchlight' ? <Searchlight key={i} />
         : e.type === 'snow' ? <Snow key={i} count={e.count} />
@@ -290,7 +304,9 @@ function Drift({ effect }: { effect: Extract<Effect, { type: 'fall' | 'rise' }> 
         ]
         return (
           <Animated.View key={i} style={[styles.particle, { left: p.x, opacity, transform }]}>
-            {effect.shape.kind === 'symbol' ? (
+            {effect.shape.kind === 'donut' ? (
+              <Donut size={p.size} frosting={p.color} id={`dn${i}`} />
+            ) : effect.shape.kind === 'symbol' ? (
               <SymbolView name={effect.shape.name as never} tintColor={p.color} style={{ width: p.size, height: p.size }} />
             ) : effect.shape.kind === 'confetti' ? (
               <View style={{ width: p.size * 0.45, height: p.size, borderRadius: 1.5, backgroundColor: p.color }} />
@@ -880,6 +896,125 @@ function Searchlight() {
         <Ellipse cx={beamW / 2} cy={topY} rx={beamW * 0.2} ry={beamW * 0.11} fill="url(#spot)" />
       </Svg>
     </Animated.View>
+  )
+}
+
+// ── Donas (Los Simpson) ──────────────────────────────────────────────────
+// Masa dorada, glaseado ondulado y chispitas de colores. El agujero es
+// transparente (evenodd), así se ve el fondo a través.
+const SPRINKLES = ['#FF4D4D', '#FFD90F', '#4FC3F7', '#7CDB6A', '#FFFFFF', '#B57BFF']
+const SPRINKLE_SPOTS = [
+  [12, 4.6, 20], [17.6, 7, 70], [19.4, 12.6, 130], [17, 17.8, 30], [11.6, 19.6, 100],
+  [6.4, 17.4, 160], [4.6, 11.4, 50], [6.8, 6, 120], [14.8, 4.8, 150], [19, 9.6, 10],
+]
+function Donut({ size, frosting, id }: { size: number; frosting: string; id: string }) {
+  // Un anillo: círculo de radio R menos el agujero de radio r.
+  const ring = (R: number, r: number) =>
+    `M ${12 - R} 12 a ${R} ${R} 0 1 0 ${R * 2} 0 a ${R} ${R} 0 1 0 ${-R * 2} 0 Z ` +
+    `M ${12 - r} 12 a ${r} ${r} 0 1 0 ${r * 2} 0 a ${r} ${r} 0 1 0 ${-r * 2} 0 Z`
+  // El glaseado con borde ondulado: 14 puntos a radio alternado unidos con
+  // curvas (cada tramo pasa por el punto medio), así gotea suave.
+  const pts = Array.from({ length: 14 }, (_, k) => {
+    const a = (k / 14) * Math.PI * 2
+    const r = k % 2 ? 9.3 : 10.4
+    return [12 + Math.cos(a) * r, 12 + Math.sin(a) * r]
+  })
+  const mid = (a: number[], b: number[]) => `${((a[0] + b[0]) / 2).toFixed(2)} ${((a[1] + b[1]) / 2).toFixed(2)}`
+  const wavy =
+    `M ${mid(pts[pts.length - 1], pts[0])} ` +
+    pts.map((pt, k) => `Q ${pt[0].toFixed(2)} ${pt[1].toFixed(2)} ${mid(pt, pts[(k + 1) % pts.length])}`).join(' ') +
+    ' Z M 8.4 12 a 3.6 3.6 0 1 0 7.2 0 a 3.6 3.6 0 1 0 -7.2 0 Z'
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24">
+      <Defs>
+        <RadialGradient id={`${id}d`} cx="40%" cy="35%" r="70%">
+          <Stop offset="0" stopColor="#F2C27E" />
+          <Stop offset="1" stopColor="#C98A45" />
+        </RadialGradient>
+      </Defs>
+      <Path d={ring(11.5, 3.2)} fill={`url(#${id}d)`} fillRule="evenodd" />
+      <Path d={wavy} fill={frosting} fillRule="evenodd" strokeLinejoin="round" stroke={frosting} strokeWidth={0.8} />
+      {/* Brillo del glaseado */}
+      <Path d="M 6.2 9 A 6.4 6.4 0 0 1 11 5.6" stroke="rgba(255,255,255,0.7)" strokeWidth={1.3} strokeLinecap="round" fill="none" />
+      {SPRINKLE_SPOTS.map(([x, y, rot], k) => (
+        <Rect key={k} x={x - 1.1} y={y - 0.4} width={2.2} height={0.8} rx={0.4} fill={SPRINKLES[k % SPRINKLES.length]} transform={`rotate(${rot} ${x} ${y})`} />
+      ))}
+    </Svg>
+  )
+}
+
+// ── Nubes que se abren (Los Simpson) ─────────────────────────────────────
+// Al entrar, la parte de arriba está cubierta de nubes blancas y mullidas
+// que se separan hacia los costados y se desvanecen, como el cielo que se
+// abre al principio de la serie.
+function Clouds({ count }: { count: number }) {
+  const { width, height } = useWindowDimensions()
+  const clouds = useMemo(
+    () =>
+      Array.from({ length: count }, (_, i) => {
+        const left = i % 2 === 0
+        const w = rand(width * 0.55, width * 0.85)
+        return {
+          w,
+          x: rand(-w * 0.35, width - w * 0.65),
+          y: rand(-20, height * 0.32),
+          dx: (left ? -1 : 1) * rand(width * 0.6, width * 0.95),
+          dy: rand(-30, 10),
+          delay: rand(150, 650),
+          ms: rand(1700, 2400),
+          v: new Animated.Value(0),
+        }
+      }),
+    [count, width, height]
+  )
+  useEffect(() => {
+    const anims = clouds.map((c) =>
+      Animated.sequence([
+        Animated.delay(c.delay),
+        Animated.timing(c.v, { toValue: 1, duration: c.ms, easing: Easing.inOut(Easing.cubic), useNativeDriver: true }),
+      ])
+    )
+    anims.forEach((a) => a.start())
+    return () => anims.forEach((a) => a.stop())
+  }, [clouds])
+  return (
+    <>
+      {clouds.map((c, i) => (
+        <Animated.View
+          key={i}
+          style={{
+            position: 'absolute', left: c.x, top: c.y,
+            opacity: c.v.interpolate({ inputRange: [0, 0.55, 1], outputRange: [0.97, 0.9, 0] }),
+            transform: [
+              { translateX: c.v.interpolate({ inputRange: [0, 1], outputRange: [0, c.dx] }) },
+              { translateY: c.v.interpolate({ inputRange: [0, 1], outputRange: [0, c.dy] }) },
+              { scale: c.v.interpolate({ inputRange: [0, 1], outputRange: [1, 1.25] }) },
+            ],
+          }}
+        >
+          <CloudShape width={c.w} id={`cl${i}`} />
+        </Animated.View>
+      ))}
+    </>
+  )
+}
+
+// Nube de dibujo animado: bollos redondos sobre una base plana, blanca arriba
+// y apenas celeste abajo.
+function CloudShape({ width, id }: { width: number; id: string }) {
+  return (
+    <Svg width={width} height={width * 0.5} viewBox="0 0 200 100">
+      <Defs>
+        <SvgLinearGradient id={`${id}g`} x1="0" y1="0" x2="0" y2="1">
+          <Stop offset="0.45" stopColor="#FFFFFF" />
+          <Stop offset="1" stopColor="#DCEBFA" />
+        </SvgLinearGradient>
+      </Defs>
+      <Path
+        d="M 22 86 C 4 86 2 62 20 58 C 16 36 44 28 56 42 C 60 18 98 10 110 34 C 122 14 160 20 158 46 C 182 42 196 62 184 78 C 182 84 176 86 170 86 Z"
+        fill={`url(#${id}g)`}
+      />
+    </Svg>
   )
 }
 

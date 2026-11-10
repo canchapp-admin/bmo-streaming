@@ -220,6 +220,47 @@ const THEMES: Record<string, { name: string; rows: ThemeRow[] }> = {
 }
 const THEME_ROW_MIN = 6
 
+// ── Los Simpson ──────────────────────────────────────────────────────────
+// Curada a mano: la serie y la película, los cortos de Disney+, lo que hizo
+// Matt Groening después, y comedias animadas de la misma familia. IDs de TMDB
+// verificados uno por uno.
+THEMES.simpsons = {
+  name: 'Los Simpson',
+  rows: [
+    {
+      title: 'Lo esencial de Springfield', type: 'tv',
+      // La serie, la película (2007), la nueva película (2027), Fortnite x Los
+      // Simpson, Plusniversario y Santa Homero.
+      items: [
+        ['tv', 456], ['movie', 35], ['movie', 1554353], ['tv', 304530], ['movie', 877183], ['movie', 1399914],
+      ],
+    },
+    {
+      title: 'Cortos de Disney+', type: 'movie', style: 'backdrop',
+      // Jugando con el destino, El Bueno, el Bart y el Loki, Maggie y la Fuerza,
+      // Bienvenidos al Club, Cuando Billie encontró a Lisa, Rogue (no del todo)
+      // One, Que el Día de la Madre te acompañe, con los Bocelli.
+      ids: [673595, 846214, 825597, 1015602, 962659, 1121116, 1284004, 1058732],
+      // TMDB lo tiene solo en inglés.
+      names: { 825597: 'Maggie Simpson en "El despertar de la siesta"' },
+    },
+    {
+      title: 'Del creador de Los Simpson', type: 'tv',
+      // Matt Groening: Futurama y (Des)encanto, y las cuatro películas de Futurama.
+      items: [
+        ['tv', 615], ['tv', 73021], ['movie', 7249], ['movie', 12889], ['movie', 15060], ['movie', 13253],
+      ],
+    },
+    {
+      title: 'Si te gustan Los Simpson', type: 'tv', style: 'backdrop',
+      // Padre de familia, Los Reyes de la Colina, Bob's Burgers, American Dad,
+      // Central Park, The Great North, Krapopolis.
+      ids: [1434, 2122, 32726, 1433, 98198, 93221, 131033],
+    },
+    { title: 'Comedias animadas para reír', type: 'movie', sort: 'top', style: 'ranked', params: { with_genres: '16,35', 'vote_count.gte': 4000 } },
+  ],
+}
+
 // ── Harry Potter / el mundo mágico ───────────────────────────────────────
 // Curada a mano: la saga en orden, lo que vino después (Animales fantásticos,
 // el reencuentro, la serie de HBO), y para seguir: películas y series con
