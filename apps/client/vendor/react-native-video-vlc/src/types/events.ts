@@ -14,4 +14,6 @@ export interface ReactVideoVLCEvents {
   onLoadStart?: () => void;
   onProgress?: (e: OnProgressData) => void;
   onPlaybackStateChanged?: (e: OnPlaybackStateChangedData) => void;
+  /** iOS: el video pasó a (o volvió de) una pantalla externa — Duplicar pantalla o cable. */
+  onExternalScreen?: (e: { active: boolean }) => void;
 }

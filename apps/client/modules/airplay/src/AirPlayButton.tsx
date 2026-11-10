@@ -8,7 +8,7 @@ import type { ViewProps } from 'react-native'
 // registrados bajo Name("AirPlay") en AirPlayModule.swift.
 const NativeAirPlayView = requireNativeView('AirPlay')
 
-type NativeAirPlayModule = { isConnected: () => boolean }
+type NativeAirPlayModule = { isConnected: () => boolean; isMirroring?: () => boolean }
 // requireNativeModule lanza si el módulo nativo no está enlazado (p. ej. al
 // correr en un binario viejo sin este módulo). Se degrada a un stub para no
 // romper la pantalla — el botón simplemente no aparecerá útil.
@@ -32,6 +32,18 @@ export type AirPlayButtonProps = ViewProps & {
 export function isAirPlayConnected(): boolean {
   try {
     return NativeAirPlayModule.isConnected()
+  } catch {
+    return false
+  }
+}
+
+/**
+ * ¿Se está duplicando la pantalla en una TV (o hay una pantalla por cable)?
+ * En ese caso el reproductor VLC dibuja el video en la TV él mismo.
+ */
+export function isScreenMirroring(): boolean {
+  try {
+    return NativeAirPlayModule.isMirroring?.() ?? false
   } catch {
     return false
   }

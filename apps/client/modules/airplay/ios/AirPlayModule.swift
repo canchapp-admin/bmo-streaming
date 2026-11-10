@@ -14,6 +14,13 @@ public class AirPlayModule: Module {
         .contains { $0.portType == .airPlay }
     }
 
+    // ¿Hay una pantalla externa (Duplicar pantalla o cable)? Ahí el VLC dibuja
+    // el video directo en la TV, así que NO hay que saltar a HLS: la duplicación
+    // también manda el audio por AirPlay y se confundía con un cast normal.
+    Function("isMirroring") { () -> Bool in
+      UIScreen.screens.count > 1
+    }.runOnQueue(.main)
+
     View(AirPlayView.self) {
       // Fires whenever the AirPlay connection state changes. `connected` is true
       // when an AirPlay output becomes active, false when it goes away.

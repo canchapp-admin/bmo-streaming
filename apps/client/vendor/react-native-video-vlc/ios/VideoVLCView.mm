@@ -34,6 +34,11 @@ static int VideoVLCSafeTrackId(NSArray *indexes, NSUInteger i) {
 
 @implementation VideoVLCView {
     UIView *_view;
+    // Donde VLC dibuja. Vive dentro de _view; con una pantalla externa se muda
+    // a una ventana en la TV (ver updateExternalScreen).
+    UIView *_videoHost;
+    UIWindow *_externalWindow;
+    BOOL _externalActive;
     VLCMediaPlayer *_player;
     NSString *_currentUri;
     BOOL _hasEmittedLoad;
@@ -61,9 +66,27 @@ static int VideoVLCSafeTrackId(NSArray *indexes, NSUInteger i) {
         _view.backgroundColor = [UIColor blackColor];
         self.contentView = _view;
 
+        _videoHost = [[UIView alloc] initWithFrame:_view.bounds];
+        _videoHost.backgroundColor = [UIColor blackColor];
+        _videoHost.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        [_view addSubview:_videoHost];
+
         _player = [[VLCMediaPlayer alloc] init];
-        _player.drawable = _view;
+        _player.drawable = _videoHost;
         _player.delegate = self;
+
+        // Pantalla externa (Duplicar pantalla por AirPlay, o cable): VLCKit no
+        // puede mandar video por AirPlay como AVPlayer (solo pasaría el audio),
+        // pero sí podemos dibujar en la pantalla de la TV. Es lo que hace la
+        // app de VLC: el video a pantalla completa allá, el teléfono de control.
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                  selector:@selector(screensChanged:)
+                                                      name:UIScreenDidConnectNotification
+                                                    object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                  selector:@selector(screensChanged:)
+                                                      name:UIScreenDidDisconnectNotification
+                                                    object:nil];
 
         // Además del delegate, nos suscribimos directo a las notificaciones —
         // VLCKit expone estos nombres públicamente para esto. Es redundante con
@@ -90,6 +113,7 @@ static int VideoVLCSafeTrackId(NSArray *indexes, NSUInteger i) {
 - (void)dealloc
 {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+    [self tearDownExternalWindow];
     _player.delegate = nil;
     [_player stop];
     if (_aspectRatioBuf) { free(_aspectRatioBuf); _aspectRatioBuf = NULL; }
@@ -100,6 +124,8 @@ static int VideoVLCSafeTrackId(NSArray *indexes, NSUInteger i) {
 {
     [super prepareForRecycle];
     [_player stop];
+    [self tearDownExternalWindow];
+    _externalActive = NO;
     _currentUri = nil;
     _hasEmittedLoad = NO;
     _isBuffering = NO;
@@ -112,6 +138,77 @@ static int VideoVLCSafeTrackId(NSArray *indexes, NSUInteger i) {
 {
     [super layoutSubviews];
     [self updateVideoGravity];
+}
+
+#pragma mark - Pantalla externa
+
+- (void)didMoveToWindow
+{
+    [super didMoveToWindow];
+    // Al aparecer en pantalla puede que la TV ya esté conectada; al irse (se
+    // cerró el reproductor) hay que devolverle la pantalla a iOS.
+    [self updateExternalScreen];
+}
+
+- (void)screensChanged:(NSNotification *)note
+{
+    dispatch_async(dispatch_get_main_queue(), ^{ [self updateExternalScreen]; });
+}
+
+- (UIScreen *)externalScreen
+{
+    for (UIScreen *screen in [UIScreen screens]) {
+        if (screen != [UIScreen mainScreen]) return screen;
+    }
+    return nil;
+}
+
+- (void)updateExternalScreen
+{
+    UIScreen *external = [self externalScreen];
+    // Solo mientras este reproductor está en pantalla.
+    BOOL want = external != nil && self.window != nil;
+
+    if (want && !_externalWindow) {
+        UIWindow *window = [[UIWindow alloc] initWithFrame:external.bounds];
+        window.screen = external;
+        window.backgroundColor = [UIColor blackColor];
+        UIViewController *vc = [[UIViewController alloc] init];
+        vc.view.backgroundColor = [UIColor blackColor];
+        window.rootViewController = vc;
+        // Se muda la vista donde dibuja VLC (no se cambia el drawable): VLCKit
+        // sigue con su misma salida de video y no hay que reiniciarla.
+        [_videoHost removeFromSuperview];
+        _videoHost.frame = vc.view.bounds;
+        [vc.view addSubview:_videoHost];
+        window.hidden = NO;
+        _externalWindow = window;
+        _externalActive = YES;
+        [self updateVideoGravity];
+        [self emitExternalScreen];
+    } else if (!want && _externalWindow) {
+        [self tearDownExternalWindow];
+        _externalActive = NO;
+        [self updateVideoGravity];
+        [self emitExternalScreen];
+    }
+}
+
+- (void)tearDownExternalWindow
+{
+    if (!_externalWindow) return;
+    [_videoHost removeFromSuperview];
+    _videoHost.frame = _view.bounds;
+    [_view addSubview:_videoHost];
+    _externalWindow.hidden = YES;
+    _externalWindow.rootViewController = nil;
+    _externalWindow = nil;
+}
+
+- (void)emitExternalScreen
+{
+    auto emitter = [self videoEventEmitter];
+    if (emitter) emitter->onVideoExternalScreen({.active = (bool)_externalActive});
 }
 
 #pragma mark - Props
@@ -240,7 +337,8 @@ static int VideoVLCSafeTrackId(NSArray *indexes, NSUInteger i) {
 - (void)updateVideoGravity
 {
     if (!_player) return;
-    CGSize viewSize = _view.bounds.size;
+    // En la TV manda el tamaño de la pantalla externa, no el del teléfono.
+    CGSize viewSize = (_videoHost.superview ?: _view).bounds.size;
     if (viewSize.width < 1 || viewSize.height < 1) return;
 
     _player.videoAspectRatio = NULL;
@@ -373,6 +471,8 @@ static int VideoVLCSafeTrackId(NSArray *indexes, NSUInteger i) {
     if (!_hasEmittedLoad) {
         _hasEmittedLoad = YES;
         [self emitLoad];
+        // Si la TV ya estaba conectada antes de que JS escuchara, que se entere.
+        if (_externalActive) [self emitExternalScreen];
     }
 }
 

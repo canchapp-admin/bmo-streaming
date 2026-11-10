@@ -69,6 +69,7 @@ const VideoVLC = forwardRef<VideoVLCRef, ReactVideoVLCProps>(
       onLoadStart,
       onPlaybackStateChanged,
       onProgress,
+      onExternalScreen,
       style,
       ...rest
     },
@@ -175,6 +176,9 @@ const VideoVLC = forwardRef<VideoVLCRef, ReactVideoVLCProps>(
           onVideoLoad={onLoad ? onVideoLoad : undefined}
           onVideoPlaybackStateChanged={
             onPlaybackStateChanged ? onVideoPlaybackStateChanged : undefined
+          }
+          onVideoExternalScreen={
+            onExternalScreen ? (e: NativeSyntheticEvent<{ active: boolean }>) => onExternalScreen(e.nativeEvent) : undefined
           }
         />
       </View>

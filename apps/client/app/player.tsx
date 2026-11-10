@@ -39,7 +39,7 @@ import { Touchable } from '@/components/Touchable'
 import { Glass } from '@/components/Glass'
 import { GlassButton } from '@/components/GlassButton'
 import { Scrubber } from '@/components/player/Scrubber'
-import { AirPlayButton, isAirPlayConnected } from '@/modules/airplay'
+import { AirPlayButton, isAirPlayConnected, isScreenMirroring } from '@/modules/airplay'
 import VideoVLC from '@/vendor/react-native-video-vlc/src/VideoVLC'
 import type {
   VideoVLCRef,
@@ -861,6 +861,9 @@ function VlcPlayer({
   const [duration, setDuration] = useState(0)
   const [position, setPosition] = useState(0)
   const [buffering, setBuffering] = useState(true)
+  // El video se está viendo en la TV (Duplicar pantalla / cable): VLC lo
+  // dibuja allá a pantalla completa y acá queda el control remoto.
+  const [onTv, setOnTv] = useState(false)
   const [controlsVisible, setControlsVisible] = useState(true)
   const [audioTracks, setAudioTracks] = useState<TrackInfo[]>([])
   const [textTracks, setTextTracks] = useState<TrackInfo[]>([])
@@ -987,10 +990,26 @@ function VlcPlayer({
   // Si ya hay una TV conectada por AirPlay (p. ej. desde el Centro de Control)
   // al montar esta fuente VLC, saltamos a HLS de una — sin esperar a que el
   // usuario toque el botón.
+  //
+  // Duplicando la pantalla NO: ahí VLC dibuja el video en la TV él mismo (ver
+  // onExternalScreen), y la duplicación también manda el audio por AirPlay,
+  // así que antes se confundía con un cast y saltaba a HLS sin necesidad.
   useEffect(() => {
-    if (onCast && isAirPlayConnected()) onCast()
+    if (onCast && isAirPlayConnected() && !isScreenMirroring()) onCast()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Al conectar una TV desde el botón: se espera un instante porque el aviso
+  // de la pantalla externa (duplicación) llega después que el del audio.
+  const castCheck = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => { if (castCheck.current) clearTimeout(castCheck.current) }, [])
+  function handleAirPlayChange(connected: boolean) {
+    if (castCheck.current) clearTimeout(castCheck.current)
+    if (!connected || !onCast) return
+    castCheck.current = setTimeout(() => {
+      if (isAirPlayConnected() && !isScreenMirroring()) onCast()
+    }, 900)
+  }
 
   function toggleControls() {
     setControlsVisible((v) => {
@@ -1247,7 +1266,19 @@ function VlcPlayer({
             onBuffer={handleBuffer}
             onError={handleError}
             onEnd={onEnded}
+            onExternalScreen={(e) => setOnTv(e.active)}
           />
+          {/* En la TV: acá, en vez de un rectángulo negro, se dice dónde se
+              está viendo. Los controles siguen funcionando encima. */}
+          {onTv && (
+            <View pointerEvents="none" style={styles.onTvCover}>
+              <SymbolView name="tv" weight="light" tintColor="rgba(255,255,255,0.85)" style={styles.onTvIcon} />
+              <Text style={styles.onTvTitle}>Reproduciendo en la TV</Text>
+              <Text style={styles.onTvSub} numberOfLines={1}>
+                {episodeLabel ? `${title} · ${episodeLabel}` : title}
+              </Text>
+            </View>
+          )}
           {activeCue && (
             // El `bottom` sale de la preferencia y NO se le suma insets.bottom:
             // en landscape forzado por lockAsync (no una rotación física real),
@@ -1369,7 +1400,7 @@ function VlcPlayer({
                   style={styles.airplayBtn}
                   tint="#FFFFFF"
                   activeTint={colors.accent}
-                  onConnectionChange={(e) => { if (e.nativeEvent.connected) onCast() }}
+                  onConnectionChange={(e) => handleAirPlayChange(e.nativeEvent.connected)}
                 />
               </Glass>
             )}
@@ -2115,6 +2146,13 @@ const styles = StyleSheet.create({
   // Botones de Liquid Glass (GlassButton): el vidrio pone forma y borde.
   roundBtn: { width: 42, height: 42, alignItems: 'center', justifyContent: 'center' },
   roundIcon: { width: 16, height: 16 },
+  onTvCover: {
+    ...StyleSheet.absoluteFillObject, backgroundColor: '#0B0B0D',
+    alignItems: 'center', justifyContent: 'center', gap: 8,
+  },
+  onTvIcon: { width: 64, height: 64, marginBottom: 6 },
+  onTvTitle: { color: '#fff', fontSize: 20, fontWeight: '700' },
+  onTvSub: { color: 'rgba(255,255,255,0.55)', fontSize: 14, fontWeight: '500', maxWidth: '70%' },
   // AVRoutePickerView dibuja su propio glifo de AirPlay; centrado en el botón.
   airplayBtn: { width: 24, height: 24 },
 

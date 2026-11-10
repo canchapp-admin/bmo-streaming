@@ -61,6 +61,10 @@ export type OnProgressData = Readonly<{
   progress: Float;
 }>;
 
+// Pantalla externa (Duplicar pantalla / cable): el video se dibuja a pantalla
+// completa en la TV y el teléfono queda como control remoto.
+export type OnExternalScreenData = Readonly<{ active: boolean }>;
+
 export type OnPlaybackStateChangedData = Readonly<{
   isPlaying: boolean;
   isSeeking: boolean;
@@ -86,6 +90,7 @@ export interface NativeProps extends ViewProps {
   onVideoProgress?: DirectEventHandler<OnProgressData>;
   onVideoEnd?: DirectEventHandler<{}>; // all
   onVideoPlaybackStateChanged?: DirectEventHandler<OnPlaybackStateChangedData>; // android only
+  onVideoExternalScreen?: DirectEventHandler<OnExternalScreenData>; // iOS
 }
 
 export default codegenNativeComponent<NativeProps>(
