@@ -62,7 +62,9 @@ function RootNavigator() {
         <Stack.Screen name="login" options={{ headerShown: false, animation: 'fade' }} />
         <Stack.Screen name="profiles" options={{ headerShown: false, animation: 'fade' }} />
         {/* Desde una tarjeta (?zoom=1) la ficha entra con fundido: el zoom del
-            póster (ZoomOverlay) hace de transición. Si no, el empuje normal. */}
+            póster (ZoomOverlay) hace de transición y la tapa mientras se monta
+            (Core Animation, no le quita cuadros). Al volver, se va con fundido.
+            Si no, el empuje normal. */}
         <Stack.Screen
           name="title/[type]/[id]"
           options={({ route }) => ({

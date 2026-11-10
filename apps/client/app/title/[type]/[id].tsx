@@ -41,6 +41,7 @@ import { InlineTrailer } from '@/components/InlineTrailer'
 import { TiltLayer, TiltGlare } from '@/components/TiltLayer'
 import { useTilt } from '@/lib/useTilt'
 import { useDominantColor } from '@/lib/dominantColor'
+import { zoomLanded } from '@/lib/zoomTransition'
 import { mix, withAlpha } from '@/lib/color'
 import { colors } from '@/lib/theme'
 
@@ -62,7 +63,7 @@ const HEADER_FADE_END = HERO_H * 0.8
 export default function TitleScreen() {
   const router = useRouter()
   const insets = useSafeAreaInsets()
-  const { type, id } = useLocalSearchParams<{ type: string; id: string }>()
+  const { type, id, zoom } = useLocalSearchParams<{ type: string; id: string; zoom?: string }>()
   const isTv = type === 'tv'
 
   function play() {
@@ -166,6 +167,11 @@ export default function TitleScreen() {
   // entra con un fundido.
   const dominant = useDominantColor(data?.poster_path)
   const tint = dominant ? mix(dominant, 0.22) : null
+
+  // Sin imagen de hero (o si falló la ficha) no hay onLoad que espere el zoom.
+  useEffect(() => {
+    if (zoom && (error || (data && !data.backdrop_path))) zoomLanded()
+  }, [zoom, error, data])
 
   const scrollRef = useAnimatedRef<Animated.ScrollView>()
   function openTrailer() {
@@ -327,7 +333,11 @@ export default function TitleScreen() {
                     source={backdropUrl(data.backdrop_path, 'w1280')}
                     style={styles.heroBg}
                     contentFit="cover"
-                    transition={250}
+                    // Llegando con el zoom del póster, la imagen ya está
+                    // debajo de la copia: sin fundido propio, y avisa para
+                    // que la copia se vaya (lib/zoomTransition).
+                    transition={zoom ? 0 : 250}
+                    onLoad={zoom ? zoomLanded : undefined}
                   />
                 )}
               </TiltLayer>

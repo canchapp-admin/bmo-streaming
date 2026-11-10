@@ -843,7 +843,6 @@ function VlcPlayer({
   // Aparecen y se van con un fundido (antes era de golpe). Se desmontan
   // recién al terminar de irse.
   const controlsAnim = useRef(new Animated.Value(1)).current
-  const [controlsMounted, setControlsMounted] = useState(true)
   const menuAnim = useRef(new Animated.Value(0)).current
 
   // Preferencias de subtítulo (modo activo, estilo y sincronía) en @bmo/player,
@@ -887,14 +886,17 @@ function VlcPlayer({
     }, 4000)
   }
 
+  // Los controles quedan MONTADOS aunque estén ocultos (fuera de pantalla y
+  // sin recibir toques). Antes se desmontaban al esconderse y al tocar había
+  // que crear de nuevo todo el árbol con sus vidrios: eso era buena parte de
+  // la demora en aparecer.
   useEffect(() => {
-    if (controlsVisible) setControlsMounted(true)
     Animated.timing(controlsAnim, {
       toValue: controlsVisible ? 1 : 0,
-      duration: controlsVisible ? 180 : 280,
+      duration: controlsVisible ? 160 : 260,
       easing: Easing.out(Easing.quad),
       useNativeDriver: true,
-    }).start(({ finished }) => { if (finished && !controlsVisible) setControlsMounted(false) })
+    }).start()
   }, [controlsVisible])
 
   // En pausa los controles no se van (como en Apple TV); al volver a
@@ -981,12 +983,11 @@ function VlcPlayer({
   // Tap simple = mostrar/ocultar controles; doble tap en la mitad izquierda/
   // derecha = retroceder/adelantar 10s. Comparten el mismo Pressable.
   //
-  // Con el HUD VISIBLE, un toque lo oculta al instante (no hay ambigüedad). Con
-  // el HUD OCULTO el toque es ambiguo (mostrar vs doble-tap-seek), así que
-  // DIFERIMOS el "mostrar" la ventana de doble tap: si llega el segundo toque,
-  // hacemos seek + hint y el HUD NUNCA aparece (sin el parpadeo de antes). El
-  // costo es que mostrar el HUD desde oculto tiene ~280ms de espera — a cambio de
-  // que el doble tap para adelantar/atrasar quede limpio, solo con el indicador.
+  // El toque muestra/oculta AL INSTANTE, como en la app TV. Antes, con el HUD
+  // oculto, se esperaba la ventana de doble tap (280 ms) antes de mostrarlo y
+  // se sentía lento. Ahora si llega el segundo toque se adelanta/atrasa igual
+  // y los controles simplemente quedan a la vista (no se esconden de golpe,
+  // que era el parpadeo que se quería evitar).
   function handleVideoPress(e: GestureResponderEvent) {
     const side: 'left' | 'right' = e.nativeEvent.locationX < winWidth / 2 ? 'left' : 'right'
     const now = Date.now()
@@ -1019,17 +1020,7 @@ function VlcPlayer({
 
     lastTap.current = { time: now, side }
 
-    if (controlsVisible) {
-      toggleControls() // → ocultar, al instante
-    } else {
-      // Oculto: esperar la ventana de doble tap antes de mostrar.
-      if (pendingShow.current) clearTimeout(pendingShow.current)
-      pendingShow.current = setTimeout(() => {
-        pendingShow.current = null
-        setControlsVisible(true)
-        scheduleHide()
-      }, DOUBLE_TAP_MS)
-    }
+    toggleControls()
   }
 
   function setFilledWithHint(next: boolean) {
@@ -1131,7 +1122,7 @@ function VlcPlayer({
     // seguía en el punto saltado mientras el contador ya decía otra cosa.
     // Filtramos esos reportes implausibles hasta ver uno que tenga sentido.
     if (lastSeekTarget.current != null) {
-      if (Date.now() < seekGuardUntil.current && data.currentTime < lastSeekTarget.current - 8) {
+      if (Date.now() < seekGuardUntil.current && Math.abs(data.currentTime - lastSeekTarget.current) > 8) {
         return
       }
       lastSeekTarget.current = null
@@ -1299,7 +1290,7 @@ function VlcPlayer({
         </View>
       )}
 
-      {controlsMounted && (
+      {(
         // box-none: el contenedor no intercepta toques (competía con el tap
         // del video); los botones de adentro sí.
         <View style={StyleSheet.absoluteFillObject} pointerEvents={controlsVisible ? 'box-none' : 'none'}>

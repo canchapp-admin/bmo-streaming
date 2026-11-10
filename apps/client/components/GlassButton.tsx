@@ -5,8 +5,13 @@ import { Glass } from './Glass'
 
 // Botón de Liquid Glass de verdad. No usa Touchable porque Touchable baja la
 // OPACIDAD al apretar, y el vidrio no se dibuja con opacidad animada (se
-// apaga mientras lo tocás). Acá el toque se siente con escala y, en iOS 26,
-// con la reacción propia del vidrio (`interactive`).
+// apaga mientras lo tocás). Acá el toque se siente con escala y vibración.
+//
+// SIN `interactive`: el vidrio interactivo de iOS 26 trae sus propios
+// reconocedores de gestos que se quedan con el toque (o lo cancelan) y el
+// Pressable nunca recibía el onPress — la X del reproductor no cerraba y los
+// botones se sentían trabados. Por lo mismo el vidrio va con
+// pointerEvents="none": el toque lo recibe siempre el Pressable.
 export function GlassButton({
   radius,
   style,
@@ -40,8 +45,11 @@ export function GlassButton({
       }}
       {...rest}
     >
-      <Animated.View style={{ transform: [{ scale: anim.interpolate({ inputRange: [0, 1], outputRange: [1, scaleTo] }) }] }}>
-        <Glass radius={radius} interactive variant={variant} tint={tint} style={style}>
+      <Animated.View
+        pointerEvents="none"
+        style={{ transform: [{ scale: anim.interpolate({ inputRange: [0, 1], outputRange: [1, scaleTo] }) }] }}
+      >
+        <Glass radius={radius} variant={variant} tint={tint} style={style}>
           {children}
         </Glass>
       </Animated.View>

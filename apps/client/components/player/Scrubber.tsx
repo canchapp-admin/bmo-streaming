@@ -1,5 +1,13 @@
-import { useRef, useState } from 'react'
-import { Animated, Easing, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native'
+import { useEffect, useRef, useState } from 'react'
+import { Pressable, StyleSheet, Text, View } from 'react-native'
+import Animated, {
+  Easing,
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated'
+import { Gesture, GestureDetector } from 'react-native-gesture-handler'
 import * as Haptics from 'expo-haptics'
 import { fmt } from '@bmo/player'
 
@@ -10,14 +18,27 @@ import { fmt } from '@bmo/player'
 //    se arrastra, una burbuja arriba muestra el tiempo al que vas a ir; el
 //    video salta recién al soltar (pedirle a VLC un seek por cada movimiento
 //    del dedo lo traba).
-//  · Abajo: lo transcurrido y lo que FALTA ("-55:48"), que es lo que la gente
-//    quiere saber. Tocando el de la derecha alterna con la duración total.
+//  · Abajo: lo transcurrido y lo que FALTA ("-55:48"). Tocando el de la
+//    derecha alterna con la duración total.
 //  · Accesible: VoiceOver la anuncia como ajustable y deslizar arriba/abajo
 //    adelanta/retrocede 10 s.
+//
+// Rendimiento: el gesto y el dibujo de la barra corren en el hilo de UI
+// (Gesture Handler + Reanimated). Antes era un PanResponder en JS y el hilo
+// de JS está ocupado con el reproductor (progreso, subtítulos…): la barra
+// seguía al dedo con retraso y a los saltos. Ahora sigue al dedo a 60/120 fps
+// aunque JS esté trabado; a JS solo van los textos, una vez por segundo.
+//
+// Después de soltar, VLC tarda en saltar y mientras tanto sigue reportando la
+// posición VIEJA: la barra volvía para atrás y después saltaba. Se mantiene
+// el punto elegido hasta que el video llega ahí (o pasan unos segundos).
 
 const TRACK_H = 5
 const HIT_H = 40
 const BUBBLE_W = 84
+const KNOB = 16
+const HOLD_MS = 4000 // cuánto se espera, como mucho, a que el video llegue al punto elegido
+const HOLD_NEAR_S = 3 // "llegó" = el progreso reportado está a menos de esto del destino
 
 export function Scrubber({
   position,
@@ -33,102 +54,138 @@ export function Scrubber({
   onSeek: (t: number) => void
 }) {
   const [width, setWidth] = useState(0)
-  const [scrubT, setScrubT] = useState<number | null>(null)
+  const [scrubSec, setScrubSec] = useState<number | null>(null)
+  const [heldSec, setHeldSec] = useState<number | null>(null)
   const [showTotal, setShowTotal] = useState(false)
-  const grow = useRef(new Animated.Value(0)).current
-  const startX = useRef(0)
-  // El PanResponder se crea una vez: lee lo último por refs.
-  const live = useRef({ width, duration, onSeek, onScrubStart, onScrubEnd })
-  live.current = { width, duration, onSeek, onScrubStart, onScrubEnd }
 
-  const timeAt = (x: number) => {
-    const { width: w, duration: d } = live.current
-    if (w <= 0 || d <= 0) return 0
-    return Math.max(0, Math.min(1, x / w)) * d
+  const w = useSharedValue(0)
+  const dur = useSharedValue(duration)
+  const progress = useSharedValue(0) // 0..1, lo que se ve en reposo
+  const scrub = useSharedValue(0) // 0..1, bajo el dedo
+  const active = useSharedValue(0) // 1 mientras se agarra
+  const grow = useSharedValue(0)
+  const lastSec = useSharedValue(-1)
+
+  const hold = useRef<{ t: number; until: number } | null>(null)
+  const live = useRef({ onSeek, onScrubStart, onScrubEnd })
+  live.current = { onSeek, onScrubStart, onScrubEnd }
+
+  useEffect(() => { dur.value = duration }, [duration])
+
+  // Posición que llega del video (cada ~500 ms) → barra. Si es un avance
+  // normal se anima lineal hasta el próximo reporte, así la barra avanza
+  // continua y no a saltitos.
+  useEffect(() => {
+    const h = hold.current
+    if (h) {
+      if (Date.now() < h.until && Math.abs(position - h.t) > HOLD_NEAR_S) return
+      hold.current = null
+      setHeldSec(null)
+    }
+    if (duration <= 0) return
+    const next = Math.max(0, Math.min(1, position / duration))
+    const deltaS = (next - progress.value) * duration
+    progress.value = deltaS > 0 && deltaS < 2
+      ? withTiming(next, { duration: 520, easing: Easing.linear })
+      : next
+  }, [position, duration])
+
+  // ── Lado JS: solo lo que no puede vivir en el hilo de UI ──
+  function begin(sec: number) {
+    setScrubSec(sec)
+    live.current.onScrubStart?.()
+    Haptics.selectionAsync().catch(() => {})
+  }
+  function end(frac: number, commit: boolean) {
+    setScrubSec(null)
+    if (commit && duration > 0) {
+      const t = frac * duration
+      hold.current = { t, until: Date.now() + HOLD_MS }
+      setHeldSec(t)
+      live.current.onSeek(t)
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {})
+    }
+    live.current.onScrubEnd?.()
   }
 
-  const setGrown = (on: boolean) =>
-    Animated.timing(grow, {
-      toValue: on ? 1 : 0, duration: on ? 140 : 220,
-      easing: Easing.out(Easing.quad), useNativeDriver: true,
-    }).start()
-
-  const pan = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      // Una vez agarrada, que el scroll/gesto de afuera no se la lleve.
-      onPanResponderTerminationRequest: () => false,
-      onPanResponderGrant: (e) => {
-        startX.current = e.nativeEvent.locationX
-        setScrubT(timeAt(startX.current))
-        setGrown(true)
-        live.current.onScrubStart?.()
-        Haptics.selectionAsync().catch(() => {})
-      },
-      onPanResponderMove: (_, g) => {
-        setScrubT(timeAt(startX.current + g.dx))
-      },
-      onPanResponderRelease: (_, g) => {
-        const t = timeAt(startX.current + g.dx)
-        setScrubT(null)
-        setGrown(false)
-        live.current.onSeek(t)
-        live.current.onScrubEnd?.()
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {})
-      },
-      onPanResponderTerminate: () => {
-        setScrubT(null)
-        setGrown(false)
-        live.current.onScrubEnd?.()
-      },
+  const pan = Gesture.Pan()
+    .minDistance(0)
+    .shouldCancelWhenOutside(false)
+    .onStart((e) => {
+      const f = w.value > 0 ? Math.max(0, Math.min(1, e.x / w.value)) : 0
+      scrub.value = f
+      active.value = 1
+      grow.value = withTiming(1, { duration: 140, easing: Easing.out(Easing.quad) })
+      lastSec.value = Math.floor(f * dur.value)
+      runOnJS(begin)(lastSec.value)
     })
-  ).current
+    .onUpdate((e) => {
+      const f = w.value > 0 ? Math.max(0, Math.min(1, e.x / w.value)) : 0
+      scrub.value = f
+      // A JS solo cuando cambia el segundo: el texto de la burbuja.
+      const s = Math.floor(f * dur.value)
+      if (s !== lastSec.value) {
+        lastSec.value = s
+        runOnJS(setScrubSec)(s)
+      }
+    })
+    .onEnd(() => {
+      // La barra se queda donde la soltaste (sin esperar a JS ni a VLC).
+      progress.value = scrub.value
+      runOnJS(end)(scrub.value, true)
+    })
+    .onFinalize((_, success) => {
+      active.value = 0
+      grow.value = withTiming(0, { duration: 220, easing: Easing.out(Easing.quad) })
+      if (!success) runOnJS(end)(scrub.value, false)
+    })
 
-  const shown = scrubT ?? position
-  const frac = duration > 0 ? Math.max(0, Math.min(1, shown / duration)) : 0
+  const fillStyle = useAnimatedStyle(() => {
+    const f = active.value ? scrub.value : progress.value
+    // Relleno de ancho completo corrido hacia la izquierda (y recortado por el
+    // track): es transform, no layout, y la punta queda redondeada.
+    return { transform: [{ translateX: (f - 1) * w.value }] }
+  })
+  const trackStyle = useAnimatedStyle(() => ({
+    transform: [{ scaleY: 1 + grow.value * 0.8 }],
+  }))
+  const knobStyle = useAnimatedStyle(() => {
+    const f = active.value ? scrub.value : progress.value
+    return { transform: [{ translateX: f * w.value - KNOB / 2 }, { scale: grow.value }] }
+  })
+  const bubbleStyle = useAnimatedStyle(() => {
+    const x = Math.max(0, Math.min(w.value - BUBBLE_W, scrub.value * w.value - BUBBLE_W / 2))
+    return { opacity: active.value, transform: [{ translateX: x }] }
+  })
+
+  const shown = scrubSec ?? heldSec ?? position
   const remaining = Math.max(0, duration - shown)
-  const bubbleLeft = Math.max(0, Math.min(width - BUBBLE_W, frac * width - BUBBLE_W / 2))
 
   return (
     <View>
-      <View
-        style={styles.hit}
-        onLayout={(e) => setWidth(e.nativeEvent.layout.width)}
-        accessible
-        accessibilityRole="adjustable"
-        accessibilityLabel="Progreso"
-        accessibilityValue={{ text: `${fmt(shown)} de ${fmt(duration)}` }}
-        accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
-        onAccessibilityAction={(e) => onSeek(position + (e.nativeEvent.actionName === 'increment' ? 10 : -10))}
-        {...pan.panHandlers}
-      >
-        {/* La barra se engrosa (escala vertical) al agarrarla */}
-        <Animated.View
-          style={[
-            styles.track,
-            { transform: [{ scaleY: grow.interpolate({ inputRange: [0, 1], outputRange: [1, 1.8] }) }] },
-          ]}
+      <GestureDetector gesture={pan}>
+        <View
+          style={styles.hit}
+          onLayout={(e) => {
+            setWidth(e.nativeEvent.layout.width)
+            w.value = e.nativeEvent.layout.width
+          }}
+          accessible
+          accessibilityRole="adjustable"
+          accessibilityLabel="Progreso"
+          accessibilityValue={{ text: `${fmt(shown)} de ${fmt(duration)}` }}
+          accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
+          onAccessibilityAction={(e) => onSeek(position + (e.nativeEvent.actionName === 'increment' ? 10 : -10))}
         >
-          <View style={[styles.fill, { width: `${frac * 100}%` }]} />
-        </Animated.View>
-        {/* El punto: solo mientras se agarra */}
-        <Animated.View
-          pointerEvents="none"
-          style={[
-            styles.knob,
-            {
-              left: frac * width - 8,
-              transform: [{ scale: grow }],
-            },
-          ]}
-        />
-        {scrubT != null && (
-          <View pointerEvents="none" style={[styles.bubble, { left: bubbleLeft }]}>
-            <Text style={styles.bubbleText}>{fmt(scrubT)}</Text>
-          </View>
-        )}
-      </View>
+          <Animated.View style={[styles.track, trackStyle]}>
+            <Animated.View style={[styles.fill, { width }, fillStyle]} />
+          </Animated.View>
+          <Animated.View pointerEvents="none" style={[styles.knob, knobStyle]} />
+          <Animated.View pointerEvents="none" style={[styles.bubble, bubbleStyle]}>
+            <Text style={styles.bubbleText}>{fmt(scrubSec ?? 0)}</Text>
+          </Animated.View>
+        </View>
+      </GestureDetector>
       <View style={styles.times}>
         <Text style={styles.time}>{fmt(shown)}</Text>
         <Pressable
@@ -156,10 +213,11 @@ const styles = StyleSheet.create({
   fill: { height: '100%', backgroundColor: '#fff', borderRadius: TRACK_H },
   knob: {
     position: 'absolute',
-    top: HIT_H / 2 - 8,
-    width: 16,
-    height: 16,
-    borderRadius: 8,
+    left: 0,
+    top: HIT_H / 2 - KNOB / 2,
+    width: KNOB,
+    height: KNOB,
+    borderRadius: KNOB / 2,
     backgroundColor: '#fff',
     shadowColor: '#000',
     shadowOpacity: 0.35,
@@ -168,6 +226,7 @@ const styles = StyleSheet.create({
   },
   bubble: {
     position: 'absolute',
+    left: 0,
     bottom: HIT_H - 4,
     width: BUBBLE_W,
     alignItems: 'center',
