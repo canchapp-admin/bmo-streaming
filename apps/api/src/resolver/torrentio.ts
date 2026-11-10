@@ -14,7 +14,7 @@ import { tmdbService } from '../tmdb/tmdb.service'
 import { TTLCache } from './cache'
 import { rdGuard, classifyStatus, classifyPlaceholder, redactSecrets, interpretUser, type AccountHealth } from './rd.guard'
 import {
-  rankCandidates, selectRunnable, autoPlayable, parseCacheState,
+  rankCandidates, selectRunnable, autoPlayable, rankForDownload, parseCacheState,
   type AudioTag, type HwTier, type LangPreference, type MediaRef, type PoorReason, type ScoredCandidate, type TorrentioStream,
 } from './torrentio.parse'
 
@@ -345,7 +345,7 @@ function failIfPlaceholder(url: string): string | null {
 
 export const debridEnabled = activeSources().length > 0
 
-export type DebridResult = { url: string; label: string; language: string; hasLatinoAlternative: boolean }
+export type DebridResult = { url: string; label: string; language: string; hasLatinoAlternative: boolean; sizeGB: number | null }
 
 export type DebridRequest = {
   type: 'movie' | 'tv'
@@ -532,7 +532,10 @@ export async function resolveDebridStream(
   req: DebridRequest,
   // Índice dentro de listDebridSources(). Cuando viene, se resuelve ESA fuente
   // en vez de correr la carrera — es el selector de calidad del reproductor.
-  pick?: number
+  pick?: number,
+  // forDownload: ordena por peso en vez de por calidad de streaming (ver
+  // rankForDownload). Solo afecta a la carrera automática, no a `pick`.
+  opts: { forDownload?: boolean } = {}
 ): Promise<DebridResult | null> {
   if (!activeSources().length) return null
   // Breaker: RD está limitando, la cuenta falla o venimos de una racha de
@@ -584,6 +587,7 @@ export async function resolveDebridStream(
         label: cp.filename,
         language: debridLanguageLabel(cp.langs),
         hasLatinoAlternative: r.hasLatinoAlternative,
+        sizeGB: cp.sizeGB,
       }
     } catch {
       console.error(`[debrid] la fuente elegida #${pick} no resolvió`)
@@ -594,7 +598,8 @@ export async function resolveDebridStream(
   // Reproducción automática: nunca una copia de cine ni un doblaje ajeno. Si lo
   // único cacheado es eso (típico de un estreno), se devuelve null y el resolver
   // prueba los scrapers; el usuario aún puede elegirlo a mano desde el selector.
-  const auto = autoPlayable(runnable)
+  const auto0 = autoPlayable(runnable)
+  const auto = opts.forDownload ? rankForDownload(auto0) : auto0
   if (!auto.length) {
     console.error(
       `[debrid] ${runnable.length} cacheados pero todos "pobres" ` +
@@ -623,6 +628,7 @@ export async function resolveDebridStream(
     label: p.filename,
     language: debridLanguageLabel(p.langs),
     hasLatinoAlternative: r.hasLatinoAlternative,
+    sizeGB: p.sizeGB,
   }
 }
 

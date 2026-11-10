@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   parseStream, parseCacheState, cacheSignalHealth, parseYear, parseEpisodeTag,
   parseSize, parseLangs, rejectionOf, bitrateMbps, decodePenalty, scoreStream,
-  rankCandidates, selectRunnable, autoPlayable, titleOverlap,
+  rankCandidates, selectRunnable, autoPlayable, rankForDownload, titleOverlap,
   type MediaRef, type TorrentioStream, type ParsedStream,
 } from './torrentio.parse'
 
@@ -667,5 +667,30 @@ describe('identidad del título sin año', () => {
   test('solapamiento parcial penaliza menos que cero', () => {
     const ref = movieRef({ title: 'La casa del dragon', originalTitle: 'House of the Dragon', year: 2020 })
     expect(scoreStream(parse('Dragon.Ball.2020.1080p.x264.mkv'), ref).parts.title).toBe(-40)
+  })
+})
+
+describe('rankForDownload — peso antes que calidad de streaming', () => {
+  const ref = () => movieRef({ title: 'Superman', originalTitle: 'Superman', year: 2020, runtimeMin: 130 })
+  const rank = (...files: string[]) =>
+    rankForDownload(rankCandidates(files.map((f) => cached(f)), ref()).ranked).map((c) => c.parsed.filename)
+
+  test('un 1080p liviano gana a un 1080p enorme aunque este puntúe parecido', () => {
+    const light = 'Superman.2020.1080p.WEB-DL.x265.mkv 💾 2.4 GB'
+    const heavy = 'Superman.2020.1080p.BluRay.x264.mkv 💾 14 GB'
+    expect(rank(heavy, light)[0]).toBe(light)
+  })
+
+  test('el 4K pierde contra un 1080p para descargar', () => {
+    const k4 = 'Superman.2020.2160p.WEB-DL.x265.mkv 💾 9 GB'
+    const hd = 'Superman.2020.1080p.WEB-DL.x264.mkv 💾 3 GB'
+    expect(rank(k4, hd)[0]).toBe(hd)
+  })
+
+  test('no revive lo pobre: lo que ya se filtró no vuelve', () => {
+    const r = rankCandidates([cached('Superman.2020.HDCAM.x264.mkv 💾 0.8 GB'), cached('Superman.2020.1080p.BluRay.x264.mkv 💾 6 GB')], ref())
+    const out = rankForDownload(autoPlayable(selectRunnable(r)))
+    expect(out).toHaveLength(1)
+    expect(out[0].poor).toBeNull()
   })
 })

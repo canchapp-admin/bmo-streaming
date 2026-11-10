@@ -1,5 +1,6 @@
 import { Elysia, t } from 'elysia'
-import { resolveStream } from './resolver.service'
+import { resolveForDownload } from './resolver.service'
+import type { AudioLang } from './resolver.service'
 
 function resolveUrl(href: string, base: string): string {
   if (href.startsWith('http')) return href
@@ -56,14 +57,18 @@ async function buildSegmentList(
   const headers: Record<string, string> = referer ? { Referer: referer } : {}
 
   // 1. Descargar el master de la CDN
-  const master = await fetch(streamUrl, { headers, signal: AbortSignal.timeout(10_000) }).then(r => r.text())
+  const masterRes = await fetch(streamUrl, { headers, signal: AbortSignal.timeout(10_000) })
+  if (!masterRes.ok) throw new Error(`master HTTP ${masterRes.status}`)
+  const master = await masterRes.text()
 
   // 2. Elegir variante
   const chosen = pickVariant(master, streamUrl)
   if (!chosen) throw new Error('No variant found')
 
   // 3. Descargar la variante
-  const variant = await fetch(chosen.url, { headers, signal: AbortSignal.timeout(10_000) }).then(r => r.text())
+  const variantRes = await fetch(chosen.url, { headers, signal: AbortSignal.timeout(10_000) })
+  if (!variantRes.ok) throw new Error(`variant HTTP ${variantRes.status}`)
+  const variant = await variantRes.text()
 
   const segments = parseVariant(variant, chosen.url)
   return { segments, quality: chosen.quality }
@@ -88,22 +93,29 @@ function qualityFromName(url: string): string {
 // Antes esto asumía SIEMPRE HLS: con una fuente 'file' hacía .text() sobre un
 // MKV de varios GB para buscarle variantes, y la función moría por timeout.
 // Desde que Real-Debrid es la fuente principal, eso rompía toda descarga.
-async function buildPayload(result: NonNullable<Awaited<ReturnType<typeof resolveStream>>>) {
+async function buildPayload(result: NonNullable<Awaited<ReturnType<typeof resolveForDownload>>>) {
   const referer = result.headers.Referer ?? result.headers.referer ?? ''
   const common = { referer, captions: result.captions, source: result.source }
 
   if (result.type === 'file') {
-    return { kind: 'file' as const, url: result.url, quality: qualityFromName(result.url), ...common }
+    // sizeGB: el cliente comprueba el espacio libre ANTES de empezar a bajar.
+    return { kind: 'file' as const, url: result.url, quality: qualityFromName(result.url), sizeGB: result.sizeGB ?? null, ...common }
   }
   const { segments, quality } = await buildSegmentList(result.url, referer)
   return { kind: 'hls' as const, segments, quality, ...common }
 }
 
+// Mismo default que el reproductor (usePlaybackSource arranca en 'latino'): lo que
+// se descarga debe tener el audio que el usuario ve en streaming.
+function parseLang(v?: string): AudioLang {
+  return v === 'original' ? 'original' : 'latino'
+}
+
 export const downloadRoutes = new Elysia({ prefix: '/download' })
   .get(
     '/movie/:id',
-    async ({ params, set }) => {
-      const result = await resolveStream('movie', Number(params.id))
+    async ({ params, query, set }) => {
+      const result = await resolveForDownload('movie', Number(params.id), undefined, undefined, parseLang(query.lang))
       if (!result) { set.status = 404; return { error: 'No stream' } }
       try {
         return await buildPayload(result)
@@ -112,12 +124,12 @@ export const downloadRoutes = new Elysia({ prefix: '/download' })
         return { error: (e as Error).message }
       }
     },
-    { params: t.Object({ id: t.String() }) }
+    { params: t.Object({ id: t.String() }), query: t.Object({ lang: t.Optional(t.String()) }) }
   )
   .get(
     '/tv/:id/:season/:episode',
-    async ({ params, set }) => {
-      const result = await resolveStream('tv', Number(params.id), Number(params.season), Number(params.episode))
+    async ({ params, query, set }) => {
+      const result = await resolveForDownload('tv', Number(params.id), Number(params.season), Number(params.episode), parseLang(query.lang))
       if (!result) { set.status = 404; return { error: 'No stream' } }
       try {
         return await buildPayload(result)
@@ -126,5 +138,5 @@ export const downloadRoutes = new Elysia({ prefix: '/download' })
         return { error: (e as Error).message }
       }
     },
-    { params: t.Object({ id: t.String(), season: t.String(), episode: t.String() }) }
+    { params: t.Object({ id: t.String(), season: t.String(), episode: t.String() }), query: t.Object({ lang: t.Optional(t.String()) }) }
   )

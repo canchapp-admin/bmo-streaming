@@ -641,6 +641,21 @@ export function selectRunnable(r: RankResult): ScoredCandidate[] {
   return pool.some((c) => !c.poor) ? pool.filter((c) => !c.poor) : pool
 }
 
+// Orden para DESCARGAR, no para ver en streaming. En streaming gana la mejor
+// calidad con arranque rápido; para bajar un archivo entero al teléfono manda el
+// peso: un remux o un 4K de 15 GB tarda una eternidad, se corta más y llena el
+// disco, y en una pantalla de teléfono un 1080p de 2-4 GB se ve igual. Parte del
+// score normal (que ya filtra lo pobre y lo roto) y le resta peso.
+export function rankForDownload(candidates: ScoredCandidate[]): ScoredCandidate[] {
+  const adjusted = (c: ScoredCandidate): number => {
+    const { sizeGB, resolution } = c.parsed
+    const sizePenalty = sizeGB != null ? Math.min(70, sizeGB * 8) : 15 // peso desconocido: prior negativo
+    const resPenalty = resolution === 2160 ? 40 : 0
+    return c.score - sizePenalty - resPenalty
+  }
+  return [...candidates].sort((a, b) => adjusted(b) - adjusted(a))
+}
+
 // Lo que el resolver puede reproducir SOLO, sin que el usuario lo elija. Nunca
 // incluye candidatos pobres: es preferible caer a los scrapers (que pueden tener
 // una copia buena) a arrancar una grabación de cine o un doblaje ruso sin avisar.

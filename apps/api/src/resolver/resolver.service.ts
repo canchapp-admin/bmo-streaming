@@ -57,6 +57,7 @@ export type StreamResult = {
   headers: Record<string, string>      // headers que el CDN espera (Referer/Origin/etc.)
   source: string
   language: string                     // etiqueta de idioma de audio inferida ("Español Latino" / "Original")
+  sizeGB?: number | null               // peso del archivo (solo type:'file'); permite al cliente comprobar el espacio libre antes de bajarlo
   hasLatinoAlternative?: boolean       // solo relevante para type:'file' (realdebrid) — hay un torrent con audio latino disponible aunque no haya ganado esta vez
 }
 
@@ -556,6 +557,56 @@ export function resolveStream(
   const lg = lang === 'latino' ? ':lang=latino' : ''
   const key = (ex ? `${base}:x=${ex}` : base) + hw + lg
   return cache.resolve(key, () => scrape(type, tmdbId, lang, season, episode, exclude, hwTier))
+}
+
+/**
+ * Fuente para DESCARGAR. Igual que resolveStream pero eligiendo por peso: la que
+ * gana al reproducir suele ser la de mayor calidad, y bajarla entera puede ser
+ * decenas de GB. No pasa por la caché de resolveStream a propósito: guarda el
+ * ganador de streaming, y las descargas son raras y de un solo uso.
+ *
+ * Si Real-Debrid no da nada, cae al camino normal (scrapers/HLS).
+ */
+export async function resolveForDownload(
+  type: 'movie' | 'tv',
+  tmdbId: number,
+  season?: number,
+  episode?: number,
+  lang: AudioLang = 'latino',
+  hwTier: HwTier = 'high'
+): Promise<StreamResult | null> {
+  if (debridEnabled) {
+    try {
+      const [built, imdbId] = await Promise.all([
+        buildMedia(type, tmdbId, season, episode),
+        imdbIdOf(type, tmdbId),
+      ])
+      if (built) {
+        const subsP = fetchSubCandidates(type, tmdbId, season, episode)
+        const debrid = await resolveDebridStream(
+          { type, tmdbId, media: built.ref, imdbId, season, episode, hwTier, lang },
+          undefined,
+          { forDownload: true }
+        )
+        if (debrid) {
+          console.error(`[download] RD ${debrid.label} (${debrid.sizeGB ?? '?'} GB)`)
+          return {
+            url: debrid.url,
+            type: 'file',
+            captions: captionsFor(await subsP, debrid.label),
+            headers: {},
+            source: 'realdebrid',
+            language: debrid.language,
+            hasLatinoAlternative: debrid.hasLatinoAlternative,
+            sizeGB: debrid.sizeGB,
+          }
+        }
+      }
+    } catch (e) {
+      console.error(`[download] RD error: ${(e as Error).message}`)
+    }
+  }
+  return resolveStream(type, tmdbId, season, episode, lang, ['realdebrid'], hwTier)
 }
 
 // Diagnóstico de subtítulos: hace el fetch crudo a Wyzie y reporta qué pasó.
