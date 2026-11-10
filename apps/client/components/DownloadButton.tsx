@@ -44,6 +44,7 @@ export function DownloadButton({
   const progress = item?.progress ?? 0
 
   async function handlePress() {
+    console.log(`[dl] botón pulsado key=${key} estado=${status}`)
     if (status === 'done') {
       await cancelDownload(key)
     } else if (status === 'downloading' || status === 'pending') {

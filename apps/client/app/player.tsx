@@ -387,6 +387,13 @@ export default function PlayerScreen() {
   // Un archivo local no tiene fuente que excluir → cae directo al error.
   function handlePlaybackError(msg: string) {
     const message = msg || 'Error de reproducción'
+    // Diagnóstico: qué motor, qué fuente y qué tan lejos llegó. Sin esto un fallo
+    // de VLC con 4K es indistinguible de un link muerto.
+    console.log(
+      `[player] fallo del motor (${useVlc ? 'VLC' : 'AVPlayer'}): "${message}" ` +
+      `fuente=${src.info?.source ?? '?'} tipo=${src.info?.type ?? '?'} idioma=${src.info?.language ?? '?'} ` +
+      `pos=${Math.round(lastPositionRef.current)}s excluidas=${src.excluded.length} local=${!!localUri}`
+    )
     if (localUri) { src.setError(message); return }
     // Si la fuente llegó a reproducir algo, la siguiente retoma ahí. Si murió en
     // el arranque (posición ~0) NO se pisa el startAt: hay que conservar el
@@ -839,6 +846,12 @@ function VlcPlayer({
   // El offset se RESTA de la posición: con offset positivo hay que "mirar más
   // atrás" en las cues, o sea que el texto aparece más tarde.
   const activeCue = subMode === 'external' ? findActiveCue(srtCues, position - subOffset) : null
+  // Diagnóstico: el estilo (tamaño, color…) solo afecta al subtítulo externo que
+  // dibujamos nosotros ('external'); una pista incrustada la pinta VLCKit y no
+  // admite cambios. Este log dice cuál de los dos casos es.
+  useEffect(() => {
+    console.log(`[subs] modo=${subMode} cues=${srtCues.length} pistasIncrustadas=${subtitleTracks.length} estilo.tamaño=${subStyle.size}`)
+  }, [subMode, srtCues.length, subtitleTracks.length, subStyle.size])
 
   function scheduleHide() {
     if (hideTimer.current) clearTimeout(hideTimer.current)
@@ -1070,6 +1083,7 @@ function VlcPlayer({
   }
 
   function handleError(data: OnVideoErrorData) {
+    console.log(`[vlc] error nativo: code=${data.error.errorCode} "${data.error.errorString}" uri=${(uri ?? '').replace(/[?#].*$/, '').slice(-90)}`)
     onError(data.error.errorString || 'Error de reproducción')
   }
 
@@ -1415,6 +1429,49 @@ function VlcPlayer({
                   contentContainerStyle={styles.vlcStyleContent}
                   showsVerticalScrollIndicator={false}
                 >
+                  {/* Aviso ARRIBA (antes estaba al final, fuera de vista): con una
+                      pista incrustada los ajustes de abajo no tienen efecto. Si
+                      además hay un subtítulo descargado, se ofrece cambiar a él. */}
+                  {isNativeSub && (
+                    <View style={styles.vlcStyleNotice}>
+                      <Text style={styles.vlcPickerNotice}>
+                        Estás viendo una pista incrustada en el archivo: el tamaño y los colores
+                        no se aplican a ella.
+                      </Text>
+                      {srtCues.length > 0 && (
+                        <Touchable
+                          scaleTo={0.96}
+                          haptic="selection"
+                          style={styles.vlcStyleChipActive}
+                          onPress={() => chooseSubMode('external')}
+                        >
+                          <Text style={styles.vlcPickerSwitchText}>Usar el subtítulo descargado</Text>
+                        </Touchable>
+                      )}
+                    </View>
+                  )}
+
+                  {/* Vista previa: se ve el cambio aunque en este instante no haya
+                      ninguna línea de diálogo en pantalla. */}
+                  <View style={styles.vlcStylePreview}>
+                    <Text
+                      style={[
+                        styles.subtitleText,
+                        {
+                          fontSize: SUBTITLE_FONT_SIZE[subStyle.size],
+                          color: SUBTITLE_COLOR_CSS[subStyle.color],
+                          backgroundColor: subStyle.background === 'semi' ? 'rgba(0,0,0,0.6)' : 'transparent',
+                          textShadowColor: SUBTITLE_OUTLINE[subStyle.outline].color,
+                          textShadowRadius: SUBTITLE_OUTLINE[subStyle.outline].radius,
+                          textShadowOffset: { width: 0, height: SUBTITLE_OUTLINE[subStyle.outline].offsetY },
+                          opacity: SUBTITLE_OPACITY_VALUE[subStyle.opacity],
+                        },
+                      ]}
+                    >
+                      Así se verá el subtítulo
+                    </Text>
+                  </View>
+
                   <SubtitleStyleRow
                     label="Tamaño"
                     value={subStyle.size}
@@ -1511,18 +1568,6 @@ function VlcPlayer({
                     Si el texto va adelantado, sube el valor. Toca el número para volver a 0.
                   </Text>
 
-                  {/* El estilo (y la sincronía) solo afectan al subtítulo que
-                      descargamos y dibujamos nosotros. Las pistas incrustadas
-                      en el archivo las renderiza VLCKit por dentro y no expone
-                      control de apariencia — ver el comentario de
-                      lib/subtitleStyle.ts. Se avisa en vez de dejar que el
-                      usuario mueva controles que no hacen nada. */}
-                  {isNativeSub && (
-                    <Text style={styles.vlcPickerNotice}>
-                      Estás viendo una pista incrustada en el archivo: estos ajustes solo
-                      se aplican al subtítulo en español que descargamos.
-                    </Text>
-                  )}
                 </ScrollView>
               ) : (
                 <ScrollView
@@ -1996,6 +2041,11 @@ const styles = StyleSheet.create({
   // que crece con el contenido y scrollea si no entra.
   vlcStyleContent: { paddingHorizontal: 4, paddingVertical: 14, gap: 16 },
   vlcStyleRow: { gap: 10 },
+  vlcStyleNotice: { gap: 8, paddingHorizontal: 4 },
+  vlcStylePreview: {
+    minHeight: 64, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: '#1c1c1e', borderRadius: 10, paddingVertical: 10, paddingHorizontal: 8,
+  },
   vlcSyncRow: {
     flexDirection: 'row', alignItems: 'center',
     justifyContent: 'space-between', marginTop: 4,
