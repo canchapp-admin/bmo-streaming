@@ -74,6 +74,10 @@ export type MediaRef = {
   // (usar el de la serie rechazaría cualquier temporada posterior a la 1).
   year: number | null
   runtimeMin: number | null
+  // Otros títulos en español (Latinoamérica: "IntensaMente 2" vs "Del revés 2"
+  // de España). Sin esto los releases latinos —que usan el título latino— caían
+  // en el castigo de título (-80) o directamente en title-mismatch.
+  altTitles?: string[]
   season?: number
   episode?: number
 }
@@ -221,7 +225,10 @@ export function parseSeeders(text: string): number | null {
 // Los \b son obligatorios: sin ellos "TRANSLATED" y "Platinum" matchean "lat".
 const LANG_PATTERNS: [AudioTag, RegExp][] = [
   ['latino', /\b(?:latino|latinoamerican[oa]|latin|latam|lat|esp[\s._-]?lat|spa[\s._-]?lat|dual[\s._-]?lat|audio[\s._-]?lat(?:ino)?|doblad[oa]|doblaje|es[\s._-]?419)\b|🇲🇽|🇦🇷|🇨🇴|🇨🇱|🇵🇪|🇻🇪|🇪🇨|🇧🇴|🇩🇴|🇺🇾|🇵🇾|🇬🇹/i],
-  ['castellano', /\b(?:castellano|cast)\b|🇪🇸/i],
+  // Trackers de ESPAÑA: sus releases son castellano aunque sólo digan "[Esp]"
+  // (caso real: "Del reves 2 … [Esp](wolfmax4k.com)" contaba como español
+  // ambiguo y le ganaba al latino).
+  ['castellano', /\b(?:castellano|cast|wolfmax4k|mejortorrent|dontorrent|divxtotal|elitetorrent|grantorrent|pctfenix|pctmix|atomohd)\b|🇪🇸/i],
   ['spanish', /\b(?:spanish|espanol|español|spa|esp)\b/i],
   ['english', /\b(?:english|eng|ing)\b|🇬🇧|🇺🇸/i],
   ['italian', /\b(?:italian|ita)\b|🇮🇹/i],
@@ -357,7 +364,11 @@ export function titleOverlap(filename: string, m: MediaRef): number {
     const hits = words.filter((w) => hay.includes(` ${w} `)).length
     return hits / words.length
   }
-  return Math.max(score(m.title), m.originalTitle ? score(m.originalTitle) : 0)
+  return Math.max(
+    score(m.title),
+    m.originalTitle ? score(m.originalTitle) : 0,
+    ...(m.altTitles ?? []).map(score),
+  )
 }
 
 // SOLO descartes categóricos: contenido equivocado o imposible de reproducir.

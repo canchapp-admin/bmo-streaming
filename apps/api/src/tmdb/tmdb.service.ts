@@ -176,14 +176,17 @@ export const tmdbService = {
 
   // Detalle (videos en es+en para maximizar tráilers disponibles).
   // release_dates/content_ratings traen la clasificación por edad (ES/US) para el badge del player.
+  // translations trae el título LATINO (es-MX/AR/…): el resolver lo usa para
+  // reconocer releases como "IntensaMente 2" cuando el título de la API es el de
+  // España ("Del revés 2").
   movieDetails: (id: number) =>
     tmdb(`/movie/${id}`, {
-      append_to_response: 'credits,videos,similar,release_dates',
+      append_to_response: 'credits,videos,similar,release_dates,translations',
       include_video_language: 'es,en',
     }),
   tvDetails: (id: number) =>
     tmdb(`/tv/${id}`, {
-      append_to_response: 'credits,videos,similar,content_ratings',
+      append_to_response: 'credits,videos,similar,content_ratings,translations',
       include_video_language: 'es,en',
     }),
   tvSeason: (id: number, season: number) =>

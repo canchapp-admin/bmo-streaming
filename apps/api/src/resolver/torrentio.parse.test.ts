@@ -670,6 +670,25 @@ describe('preferencia de español', () => {
     expect(r.ranked[0].parsed.filename).toBe(engLight)
   })
 
+  test('el título latino (altTitles) evita el castigo de título y el latino gana', () => {
+    // Caso real: TMDB es-ES = "Del revés 2", el release latino dice "IntensaMente 2".
+    const io = (alt?: string[]) => movieRef({
+      title: 'Del revés 2 (Inside Out 2)', originalTitle: 'Inside Out 2', year: 2024, runtimeMin: 97, altTitles: alt,
+    })
+    const lat = 'IntensaMente.2.2024.1080p-Dual-Lat.mkv'
+    const esp = 'Del reves 2 (Inside Out 2) (2024) [Bluray 1080p][Esp]'
+    expect(scoreStream(parse(lat), io()).parts.title).toBe(-80)
+    expect(scoreStream(parse(lat), io(['IntensaMente 2'])).parts.title).toBe(0)
+    const r = rankCandidates([cached(esp), cached(lat)], io(['IntensaMente 2']), 'high', 'latino')
+    expect(r.ranked[0].parsed.filename).toBe(lat)
+  })
+
+  test('los trackers de España cuentan como castellano', () => {
+    const l = parseLangs('Deadpool y Lobezno (2024) [Bluray 1080p][Esp](wolfmax4k.com).mkv')
+    expect(l.has('castellano')).toBe(true)
+    expect(l.has('latino')).toBe(false)
+  })
+
   test('el bonus NO rescata un 4K reescalado', () => {
     const fake = 'Superman.2020.4Kreescalado.2160p.Latino.x265.mkv'
     const r = rankCandidates([cached(fake), cached(eng)], ref(), 'high', 'latino')

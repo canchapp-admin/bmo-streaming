@@ -140,6 +140,22 @@ function buildMedia(
   return mediaCache.resolve(key, () => buildMediaUncached(type, tmdbId, season, episode))
 }
 
+// Títulos en español de OTROS países (México, Argentina…) que difieren del de
+// España que devuelve la API: "IntensaMente 2" vs "Del revés 2". Los releases
+// latinos usan el título latino; sin conocerlo, el ranking los castigaba por
+// "título no coincide" justo cuando el usuario pedía latino.
+function spanishAltTitles(d: any, field: 'title' | 'name'): string[] {
+  const list: any[] = d?.translations?.translations ?? []
+  const main = String(d?.[field] ?? '').toLowerCase()
+  const out = new Set<string>()
+  for (const t of list) {
+    if (t?.iso_639_1 !== 'es' || t?.iso_3166_1 === 'ES') continue
+    const v = String(t?.data?.[field] ?? '').trim()
+    if (v && v.toLowerCase() !== main) out.add(v)
+  }
+  return [...out]
+}
+
 // Construye el objeto ScrapeMedia que la librería necesita (título + año + tmdbIds)
 // y, en la misma pasada, el MediaRef que usa el ranking de Real-Debrid para
 // validar que el torrent sea el correcto. Sale todo de las MISMAS respuestas de
@@ -169,6 +185,7 @@ async function buildMediaUncached(
           originalLanguage: d.original_language ?? null,
           year: year ?? null,
           runtimeMin: d.runtime ?? null,
+          altTitles: spanishAltTitles(d, 'title'),
         },
       }
     }
@@ -209,6 +226,7 @@ async function buildMediaUncached(
         // llevan su año de emisión, que difiere años del de estreno de la serie.
         year: ep.air_date ? Number(String(ep.air_date).slice(0, 4)) : null,
         runtimeMin: ep.runtime ?? null,
+        altTitles: spanishAltTitles(d, 'name'),
         season: season ?? 1,
         episode: episode ?? 1,
       },
