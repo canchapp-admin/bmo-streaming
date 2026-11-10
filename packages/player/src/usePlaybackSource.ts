@@ -170,7 +170,10 @@ export function usePlaybackSource(params: PlaybackSourceParams): PlaybackSource 
         const res = await stream.pickSource(isTv ? 'tv' : 'movie', id, i, season, episode, audioLang)
         setStartAt(lastPositionRef.current)
         setInfo(res)
-      } catch {
+      } catch (e) {
+        // Este mensaje sale cuando falla la PETICIÓN al servidor al elegir una
+        // calidad, no cuando VLC no puede decodificar. Se loguea el motivo real.
+        console.log(`[player] pick #${i} falló en el servidor: ${(e as Error)?.message ?? e} (id=${id} lang=${audioLang})`)
         setErrorState('No se pudo abrir esa fuente')
       }
     },

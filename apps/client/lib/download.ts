@@ -33,6 +33,10 @@ export type DownloadItem = {
   resumeData?: string
 }
 
+// Traza de diagnóstico: aparece en la terminal de Metro con el prefijo [dl].
+// Si una descarga falla, la última línea dice en qué etapa se cortó.
+const dlog = (key: string, msg: string) => console.log(`[dl] ${key} ${msg}`)
+
 // ── Persistencia ─────────────────────────────────────────────────────────────
 
 const META_KEY = 'bmo:downloads'
@@ -232,6 +236,7 @@ export async function startDownload(opts: {
 
   // No re-descargar si ya está en progreso o completo
   const existing = map.get(key)
+  dlog(key, `startDownload (estado previo: ${existing?.status ?? 'ninguno'})`)
   if (existing?.status === 'downloading' || existing?.status === 'done') return
 
   // Registrar en pendiente. Si venía de un corte, se conserva lo necesario para
@@ -263,6 +268,8 @@ export async function startDownload(opts: {
   _runDownload(key, id, media_type, season, episode, item, map).catch(console.error)
 }
 
+let lastLoggedPct = -1
+
 // Callback de progreso con throttle: el descargador dispara muy seguido y cada
 // update escribe en AsyncStorage y notifica a la UI.
 function makeFileProgress(
@@ -276,6 +283,8 @@ function makeFileProgress(
     const now = Date.now()
     if (now - getLast() < 700 && ratio < 1) return
     setLast(now)
+    const pct = Math.floor(ratio * 10) * 10
+    if (pct !== lastLoggedPct) { lastLoggedPct = pct; console.log(`[dl] progreso ${pct}% (${(p.totalBytesWritten / 1024 ** 2).toFixed(0)}MB)`) }
     update({ progress: ratio, size: p.totalBytesWritten }).catch(() => {})
   }
 }
@@ -376,7 +385,10 @@ async function _runDownload(
       ? `${API_URL}/download/tv/${id}/${season}/${episode}`
       : `${API_URL}/download/movie/${id}`
 
+    dlog(key, `1/4 pidiendo fuente → ${apiUrl}`)
+    const tApi = Date.now()
     const resp = await fetchWithTimeout(apiUrl, 90_000)
+    dlog(key, `1/4 API respondió HTTP ${resp.status} en ${Date.now() - tApi}ms`)
     if (!resp.ok) {
       const body = await resp.text().catch(() => '')
       throw new Error(`API ${resp.status}${body ? `: ${body.slice(0, 80)}` : ''}`)
@@ -388,6 +400,9 @@ async function _runDownload(
       = await resp.json()
 
     if (ctrl.cancelled) return
+    dlog(key, data.kind === 'file'
+      ? `2/4 fuente de archivo: ${data.quality || '?'} ${data.sizeGB ?? '?'}GB ${data.url.replace(/[?#].*$/, '').slice(-60)}`
+      : `2/4 fuente HLS: ${data.segments.length} segmentos ${data.quality || '?'}`)
 
     // Espacio libre ANTES de empezar: un archivo de varios GB que se queda sin
     // disco a la mitad falla horas después, sin explicación y habiendo gastado datos.
@@ -417,13 +432,16 @@ async function _runDownload(
     if (data.kind === 'file') {
       await update({ quality: data.quality, totalSegments: 1, sourceUrl: data.url, resumeData: undefined })
       const dest = dir + fileNameFor(data.url)
+      dlog(key, `3/4 bajando archivo a ${dest.replace(DOWNLOADS_DIR, '')}`)
       const out = await downloadFileTo(
         key, ctrl, data.url, data.referer, dest,
         makeFileProgress(update, () => lastFileSave, (n) => { lastFileSave = n })
       )
       if (ctrl.cancelled) return
+      dlog(key, `4/4 archivo bajado (HTTP ${out.status}), subtítulos…`)
       await downloadSubtitle(dir, type, id, season, episode, data.captions.length)
       const info = await FileSystem.getInfoAsync(out.uri)
+      dlog(key, `✔ listo: ${(((info as any).size ?? 0) / 1024 ** 3).toFixed(2)}GB`)
       await update({
         status: 'done', progress: 1, downloadedSegments: 1,
         localPath: out.uri, size: (info as any).size ?? 0,
@@ -521,6 +539,7 @@ async function _runDownload(
     // Cancelada: cancelDownload ya borró la entrada. NO volver a escribirla —
     // `update` hace map.set y la resucitaba como una fila 'paused' fantasma.
     if (!ctrl.cancelled) {
+      dlog(key, `✖ FALLÓ: ${(e as Error).message} (${(e as Error).name})`)
       await update({
         status: 'error',
         error: (e as Error).message?.slice(0, 120),

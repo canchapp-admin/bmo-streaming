@@ -64,10 +64,13 @@ export function setHwTier(t: 'low' | 'high') { hwTier = t }
 const hwQ = () => (hwTier === 'low' ? '&hw=low' : '')
 
 export const stream = {
-  resolveMovie: (id: string | number, lang: AudioLang = 'original', exclude?: string[]) =>
-    api<ResolveInfo>(`/resolve/movie/${id}?lang=${lang}${exQ(exclude)}${hwQ()}`, RESOLVE_TIMEOUT),
-  resolveTv: (id: string | number, season: number, episode: number, lang: AudioLang = 'original', exclude?: string[]) =>
-    api<ResolveInfo>(`/resolve/tv/${id}/${season}/${episode}?lang=${lang}${exQ(exclude)}${hwQ()}`, RESOLVE_TIMEOUT),
+  // `background` marca el pre-calentamiento: el servidor lo trata como tráfico de
+  // baja prioridad (se limita en ráfagas y no lanza scrapers), para que deslizar
+  // el dedo por una fila no sature Real-Debrid ni bloquee el play real.
+  resolveMovie: (id: string | number, lang: AudioLang = 'original', exclude?: string[], background = false) =>
+    api<ResolveInfo>(`/resolve/movie/${id}?lang=${lang}${exQ(exclude)}${hwQ()}${background ? '&prewarm=1' : ''}`, RESOLVE_TIMEOUT),
+  resolveTv: (id: string | number, season: number, episode: number, lang: AudioLang = 'original', exclude?: string[], background = false) =>
+    api<ResolveInfo>(`/resolve/tv/${id}/${season}/${episode}?lang=${lang}${exQ(exclude)}${hwQ()}${background ? '&prewarm=1' : ''}`, RESOLVE_TIMEOUT),
 
   // Selector de calidad: se listan las fuentes disponibles y se elige por
   // ÍNDICE. El servidor no expone las URLs de Torrentio porque llevan la clave
@@ -96,8 +99,8 @@ export const stream = {
   // Pre-resuelve un stream en segundo plano (calienta el cache del API).
   prewarm: (type: 'movie' | 'tv', id: string | number, season?: number, episode?: number, lang: AudioLang = 'original') => {
     const p = type === 'tv'
-      ? api(`/resolve/tv/${id}/${season ?? 1}/${episode ?? 1}?lang=${lang}${hwQ()}`)
-      : api(`/resolve/movie/${id}?lang=${lang}${hwQ()}`)
+      ? api(`/resolve/tv/${id}/${season ?? 1}/${episode ?? 1}?lang=${lang}${hwQ()}&prewarm=1`)
+      : api(`/resolve/movie/${id}?lang=${lang}${hwQ()}&prewarm=1`)
     p.catch(() => {})
   },
 }
@@ -117,7 +120,7 @@ export function prewarmTitle(
   ;(async () => {
     const lang = await getAudioLang()
     if (!isTv) {
-      stream.resolveMovie(id, lang).catch(() => {})
+      stream.resolveMovie(id, lang, undefined, true).catch(() => {})
       return
     }
     let s = season
@@ -134,6 +137,6 @@ export function prewarmTitle(
         }
       } catch {}
     }
-    stream.resolveTv(id, s ?? 1, e ?? 1, lang).catch(() => {})
+    stream.resolveTv(id, s ?? 1, e ?? 1, lang, undefined, true).catch(() => {})
   })()
 }

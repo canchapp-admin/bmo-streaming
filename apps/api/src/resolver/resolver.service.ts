@@ -7,6 +7,7 @@ import {
   type RunOutput,
 } from '@p-stream/providers'
 import { TTLCache, sharedStoreFromEnv } from './cache'
+import { bgGate } from './rd.guard'
 import { tmdbService } from '../tmdb/tmdb.service'
 import { resolveRelativeUrls } from './hls'
 import { resolveDebridStream, listDebridSources, debridEnabled, debugTorrentio, debridTiming, imdbIdOf } from './torrentio'
@@ -423,7 +424,10 @@ async function scrape(
   season?: number,
   episode?: number,
   exclude: string[] = [],
-  hwTier: HwTier = 'high'
+  hwTier: HwTier = 'high',
+  // Pre-calentamiento: si Real-Debrid no da nada NO se lanzan los scrapers (20 s
+  // de trabajo por un título que quizá nadie reproduzca).
+  background = false
 ): Promise<StreamResult | null> {
   // Los detalles del título y el id de IMDb son INDEPENDIENTES entre sí, así que
   // se piden a la vez. Antes iban encadenados —buildMedia, y recién dentro del
@@ -488,6 +492,11 @@ async function scrape(
       }
     }
 
+    if (background && debridEnabled) {
+      console.error(`[resolve] prewarm sin resultado de RD: no se lanzan scrapers`)
+      return null
+    }
+
     // Iteramos fuentes: si la ganadora resulta ser un señuelo (segmentos = imágenes),
     // la descartamos y seguimos con la siguiente. Acotado por TIEMPO (no por nº de
     // intentos): antes cortábamos a los 3 y dejábamos fuera fuentes buenas (p.ej.
@@ -544,7 +553,9 @@ export function resolveStream(
   episode?: number,
   lang: AudioLang = 'original',
   exclude: string[] = [],
-  hwTier: HwTier = 'high'
+  hwTier: HwTier = 'high',
+  // true = pre-calentamiento (al tocar un póster), no un play real. Ver bgGate.
+  background = false
 ): Promise<StreamResult | null> {
   const base = type === 'tv' ? `tv:${tmdbId}:${season}:${episode}` : `movie:${tmdbId}`
   const ex = [...exclude].sort().join(',')
@@ -556,7 +567,19 @@ export function resolveStream(
   // siempre, así que su caché no se parte ni se invalida.
   const lg = lang === 'latino' ? ':lang=latino' : ''
   const key = (ex ? `${base}:x=${ex}` : base) + hw + lg
-  return cache.resolve(key, () => scrape(type, tmdbId, lang, season, episode, exclude, hwTier))
+  // El fondo pide permiso ANTES de tocar la caché: si lo creara y lo rechazara,
+  // un play real que se uniera a esa misma resolución en vuelo heredaría el null.
+  let release: (() => void) | null = null
+  if (background && !cache.has(key)) {
+    release = bgGate.tryEnter()
+    if (!release) {
+      console.error(`[resolve] prewarm omitido (breaker abierto o ${bgGate.active} en curso): ${key}`)
+      return Promise.resolve(null)
+    }
+  }
+  const p = cache.resolve(key, () => scrape(type, tmdbId, lang, season, episode, exclude, hwTier, background))
+  if (release) p.then(release, release)
+  return p
 }
 
 /**

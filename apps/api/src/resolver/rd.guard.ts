@@ -99,6 +99,38 @@ export class RdGuard {
 /** Instancia única del proceso (cada instancia serverless tiene la suya). */
 export const rdGuard = new RdGuard()
 
+/**
+ * Compuerta del tráfico de FONDO (pre-calentamiento al tocar un póster).
+ *
+ * El breaker solo debe frenar lo que no es urgente. Antes cortaba TODO: una
+ * ráfaga de prewarms (deslizar el dedo por una fila dispara uno por póster)
+ * provocaba un 429 de Real-Debrid, el breaker se abría 60 s y hasta el play que
+ * el usuario SÍ pidió recibía 404. Ahora el fondo es el que se contiene:
+ *  - no entra si el breaker está abierto, y
+ *  - entran a lo sumo `max` a la vez (cada resolución cuesta varias llamadas a RD).
+ * Lo que el usuario pide a propósito nunca pasa por acá.
+ */
+export class BackgroundGate {
+  private inFlight = 0
+  constructor(private max = 2) {}
+
+  /** Devuelve la función que libera el cupo, o null si no hay lugar. */
+  tryEnter(guard: Pick<RdGuard, 'allow'> = rdGuard): (() => void) | null {
+    if (!guard.allow() || this.inFlight >= this.max) return null
+    this.inFlight++
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      this.inFlight--
+    }
+  }
+
+  get active() { return this.inFlight }
+}
+
+export const bgGate = new BackgroundGate()
+
 // Clasifica el resultado HTTP de un salto de la cadena de resolución.
 export function classifyStatus(status: number): FailureReason | null {
   if (status === 429) return 'rate_limited'

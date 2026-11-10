@@ -391,6 +391,13 @@ export default function PlayerScreen() {
   // Un archivo local no tiene fuente que excluir → cae directo al error.
   function handlePlaybackError(msg: string) {
     const message = msg || 'Error de reproducción'
+    // Diagnóstico: qué motor, qué fuente y qué tan lejos llegó. Sin esto un fallo
+    // de VLC con 4K es indistinguible de un link muerto.
+    console.log(
+      `[player] fallo del motor (${useVlc ? 'VLC' : 'AVPlayer'}): "${message}" ` +
+      `fuente=${src.info?.source ?? '?'} tipo=${src.info?.type ?? '?'} idioma=${src.info?.language ?? '?'} ` +
+      `pos=${Math.round(lastPositionRef.current)}s excluidas=${src.excluded.length} local=${!!localUri}`
+    )
     if (localUri) { src.setError(message); return }
     // Si la fuente llegó a reproducir algo, la siguiente retoma ahí. Si murió en
     // el arranque (posición ~0) NO se pisa el startAt: hay que conservar el
@@ -864,6 +871,12 @@ function VlcPlayer({
   // El offset se RESTA de la posición: con offset positivo hay que "mirar más
   // atrás" en las cues, o sea que el texto aparece más tarde.
   const activeCue = subMode === 'external' ? findActiveCue(srtCues, position - subOffset) : null
+  // Diagnóstico: el estilo (tamaño, color…) solo afecta al subtítulo externo que
+  // dibujamos nosotros ('external'); una pista incrustada la pinta VLCKit y no
+  // admite cambios. Este log dice cuál de los dos casos es.
+  useEffect(() => {
+    console.log(`[subs] modo=${subMode} cues=${srtCues.length} pistasIncrustadas=${subtitleTracks.length} estilo.tamaño=${subStyle.size}`)
+  }, [subMode, srtCues.length, subtitleTracks.length, subStyle.size])
 
   function scheduleHide() {
     if (hideTimer.current) clearTimeout(hideTimer.current)
@@ -1141,6 +1154,7 @@ function VlcPlayer({
   }
 
   function handleError(data: OnVideoErrorData) {
+    console.log(`[vlc] error nativo: code=${data.error.errorCode} "${data.error.errorString}" uri=${(uri ?? '').replace(/[?#].*$/, '').slice(-90)}`)
     onError(data.error.errorString || 'Error de reproducción')
   }
 
@@ -1536,6 +1550,25 @@ function VlcPlayer({
                     <Text style={styles.menuTitle}>Estilo y sincronía</Text>
                   </View>
                   <ScrollView style={styles.menuScroll} contentContainerStyle={styles.styleContent} showsVerticalScrollIndicator={false}>
+                    {/* Aviso ARRIBA, donde se ve: con una pista incrustada (la
+                        dibuja VLCKit) estos ajustes no tienen efecto. Se ofrece
+                        pasar al subtítulo descargado, que sí los respeta. */}
+                    {isNativeSub && (
+                      <View style={styles.styleNotice}>
+                        <Text style={styles.styleNoticeText}>
+                          Estás viendo una pista incrustada en el archivo: el tamaño y los colores no se aplican a ella.
+                        </Text>
+                        {srtCues.length > 0 && (
+                          <Touchable
+                            scaleTo={0.96} haptic="selection" style={styles.styleNoticeBtn}
+                            onPress={() => chooseSubMode('external')}
+                            accessibilityRole="button"
+                          >
+                            <Text style={styles.styleNoticeBtnText}>Usar el subtítulo descargado</Text>
+                          </Touchable>
+                        )}
+                      </View>
+                    )}
                     {/* Vista previa en vivo: cada cambio se ve al instante */}
                     <View style={styles.previewBox}>
                       <Text
@@ -1612,11 +1645,6 @@ function VlcPlayer({
                       </Touchable>
                     </View>
                     <Text style={styles.syncHint}>Si el texto aparece antes que la voz, subí el valor. Tocá el centro para volver a 0.</Text>
-                    {isNativeSub && (
-                      <Text style={styles.menuNotice}>
-                        Estás viendo una pista del archivo: estos ajustes solo se aplican al subtítulo en español descargado.
-                      </Text>
-                    )}
                   </ScrollView>
                 </View>
               )}
@@ -2102,6 +2130,16 @@ const styles = StyleSheet.create({
 
   // Estilo del subtítulo
   styleContent: { paddingHorizontal: 8, paddingBottom: 10, gap: 14 },
+  styleNotice: {
+    gap: 10, padding: 12, borderRadius: 14, borderCurve: 'continuous',
+    backgroundColor: 'rgba(255,159,10,0.14)', marginTop: 4,
+  },
+  styleNoticeText: { color: colors.warning, fontSize: 13, lineHeight: 18 },
+  styleNoticeBtn: {
+    alignSelf: 'flex-start', paddingHorizontal: 14, height: 34, borderRadius: 17,
+    alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff',
+  },
+  styleNoticeBtnText: { color: '#000', fontSize: 13.5, fontWeight: '700' },
   previewBox: {
     height: 74, borderRadius: 14, borderCurve: 'continuous',
     alignItems: 'center', justifyContent: 'center',

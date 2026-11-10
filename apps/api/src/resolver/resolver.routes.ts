@@ -174,7 +174,7 @@ export const resolverRoutes = new Elysia({ prefix: '/resolve' })
     async ({ params, query, set }) => {
       const lang = parseLang(query.lang)
       const exclude = parseExclude(query.exclude)
-      const result = await resolveStream('movie', Number(params.id), undefined, undefined, lang, exclude, parseHwTier(query.hw))
+      const result = await resolveStream('movie', Number(params.id), undefined, undefined, lang, exclude, parseHwTier(query.hw), query.prewarm === '1')
       console.error(`[resolve] movie ${params.id} (${lang}) →`, result?.source ?? 'null')
       const summary = summarize(result)
       if (!summary) {
@@ -185,7 +185,7 @@ export const resolverRoutes = new Elysia({ prefix: '/resolve' })
     },
     {
       params: t.Object({ id: t.String() }),
-      query: t.Object({ lang: t.Optional(t.String()), exclude: t.Optional(t.String()), hw: t.Optional(t.String()) }),
+      query: t.Object({ lang: t.Optional(t.String()), exclude: t.Optional(t.String()), hw: t.Optional(t.String()), prewarm: t.Optional(t.String()) }),
     }
   )
 
@@ -201,7 +201,8 @@ export const resolverRoutes = new Elysia({ prefix: '/resolve' })
         Number(params.episode),
         lang,
         exclude,
-        parseHwTier(query.hw)
+        parseHwTier(query.hw),
+        query.prewarm === '1'
       )
       const summary = summarize(result)
       if (!summary) {
@@ -216,6 +217,6 @@ export const resolverRoutes = new Elysia({ prefix: '/resolve' })
         season: t.String(),
         episode: t.String(),
       }),
-      query: t.Object({ lang: t.Optional(t.String()), exclude: t.Optional(t.String()), hw: t.Optional(t.String()) }),
+      query: t.Object({ lang: t.Optional(t.String()), exclude: t.Optional(t.String()), hw: t.Optional(t.String()), prewarm: t.Optional(t.String()) }),
     }
   )
