@@ -26,6 +26,11 @@ export type DownloadItem = {
   error?: string
   addedAt: number
   size?: number            // bytes (estimado)
+  // Para reanudar un archivo único tras un corte: la URL con la que se empezó y
+  // los datos de reanudación que entrega el descargador al pausarlo. Si faltan,
+  // o el link ya venció, se reinicia desde cero.
+  sourceUrl?: string
+  resumeData?: string
 }
 
 // ── Persistencia ─────────────────────────────────────────────────────────────
@@ -48,7 +53,21 @@ async function loadMeta(): Promise<Map<string, DownloadItem>> {
   try {
     const raw = await AsyncStorage.getItem(META_KEY)
     const arr: DownloadItem[] = raw ? JSON.parse(raw) : []
+    // Una descarga que quedó 'downloading'/'pending' al guardarse no tiene ningún
+    // proceso vivo detrás: esta función corre una sola vez por arranque, y ahí
+    // `_active` está vacío. Sin reconciliar, la fila quedaba girando para siempre
+    // y lo único posible era cancelarla. Se pasa a 'error' para que el botón de
+    // reintentar (que ya existe) la reanude — los segmentos ya bajados se saltan.
+    let dirty = false
+    for (const d of arr) {
+      if (d.status === 'downloading' || d.status === 'pending') {
+        d.status = 'error'
+        d.error = 'Interrumpida. Toca para reintentar'
+        dirty = true
+      }
+    }
     _cache = new Map(arr.map(d => [d.key, d]))
+    if (dirty) await saveMeta()
   } catch {
     _cache = new Map()
   }
@@ -105,18 +124,52 @@ export async function deleteDownload(key: string) {
 
 type SegmentInfo = { url: string; duration: number }
 
-const MAX_CONCURRENT = 20  // segmentos en paralelo
+const MAX_CONCURRENT = 10  // segmentos en paralelo (descarga nativa: más no acelera, solo satura)
 const MAX_RETRIES    = 3   // reintentos por segmento
+const SEGMENT_TIMEOUT_MS = 25_000
+// Descargas simultáneas en total. Cada una abre MAX_CONCURRENT conexiones: dos
+// episodios a la vez (p. ej. la pre-descarga del siguiente) ya se pisan el ancho
+// de banda y ambas terminan más tarde que en fila.
+const MAX_PARALLEL_DOWNLOADS = 2
 
-// Convierte ArrayBuffer a base64 para FileSystem.writeAsStringAsync
-function bufToBase64(buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf)
-  let binary = ''
-  const CHUNK = 0x2000  // 8192 bytes — seguro en Hermes
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    binary += String.fromCharCode(...(bytes.subarray(i, i + CHUNK) as unknown as number[]))
+let _running = 0
+const _waiters: Array<() => void> = []
+async function acquireSlot(): Promise<void> {
+  if (_running < MAX_PARALLEL_DOWNLOADS) { _running++; return }
+  await new Promise<void>((resolve) => _waiters.push(resolve))  // el slot se cede ya contado
+}
+function releaseSlot() {
+  const next = _waiters.shift()
+  if (next) next()
+  else _running = Math.max(0, _running - 1)
+}
+
+// Baja UN segmento con la descarga NATIVA (streaming a disco). Antes cada segmento
+// pasaba por fetch → ArrayBuffer → base64 armado en JS → writeAsStringAsync: eso
+// ocupa el hilo de JS, duplica la memoria por segmento y era el cuello de botella
+// real, no la red. downloadAsync no tiene timeout propio, así que se corta a mano.
+async function downloadSegmentFile(
+  url: string, dest: string, headers: Record<string, string>
+): Promise<void> {
+  const resumable = FileSystem.createDownloadResumable(url, dest, { headers })
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const res = await Promise.race([
+      resumable.downloadAsync(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('timeout')), SEGMENT_TIMEOUT_MS)
+      }),
+    ])
+    if (!res || res.status < 200 || res.status >= 300) {
+      throw new Error(`HTTP ${res?.status ?? '?'}`)
+    }
+  } catch (e) {
+    await resumable.pauseAsync().catch(() => {})
+    await FileSystem.deleteAsync(dest, { idempotent: true }).catch(() => {})
+    throw e
+  } finally {
+    if (timer) clearTimeout(timer)
   }
-  return btoa(binary)
 }
 
 // AbortSignal.timeout() NO existe en el runtime de React Native (Hermes): usarlo
@@ -181,7 +234,8 @@ export async function startDownload(opts: {
   const existing = map.get(key)
   if (existing?.status === 'downloading' || existing?.status === 'done') return
 
-  // Registrar en pendiente
+  // Registrar en pendiente. Si venía de un corte, se conserva lo necesario para
+  // reanudar el archivo en vez de volver a empezar de cero.
   const item: DownloadItem = {
     key,
     id,
@@ -198,6 +252,8 @@ export async function startDownload(opts: {
     totalSegments: 0,
     downloadedSegments: 0,
     addedAt: Date.now(),
+    sourceUrl: existing?.sourceUrl,
+    resumeData: existing?.resumeData,
   }
   map.set(key, item)
   await saveMeta()
@@ -205,6 +261,58 @@ export async function startDownload(opts: {
 
   // Ejecutar en segundo plano (no awaited)
   _runDownload(key, id, media_type, season, episode, item, map).catch(console.error)
+}
+
+// Callback de progreso con throttle: el descargador dispara muy seguido y cada
+// update escribe en AsyncStorage y notifica a la UI.
+function makeFileProgress(
+  update: (patch: Partial<DownloadItem>) => Promise<void>,
+  getLast: () => number,
+  setLast: (n: number) => void
+) {
+  return (p: FileSystem.DownloadProgressData) => {
+    if (!p.totalBytesExpectedToWrite || p.totalBytesExpectedToWrite < 0) return
+    const ratio = p.totalBytesWritten / p.totalBytesExpectedToWrite
+    const now = Date.now()
+    if (now - getLast() < 700 && ratio < 1) return
+    setLast(now)
+    update({ progress: ratio, size: p.totalBytesWritten }).catch(() => {})
+  }
+}
+
+// Descarga (o reanuda) un archivo único a disco. Devuelve el resultado SOLO si el
+// servidor respondió 2xx: antes bastaba con que hubiera `uri`, y un 403 de un link
+// vencido escribía la página de error como si fuera el video y la marcaba 'done'.
+// Si falla sin que el usuario haya cancelado, se pausa el descargador para
+// obtener los datos de reanudación y se adjuntan al error (`resumeData`).
+async function downloadFileTo(
+  key: string,
+  ctrl: { cancelled: boolean },
+  url: string,
+  referer: string,
+  dest: string,
+  onProgress: (p: FileSystem.DownloadProgressData) => void,
+  resumeData?: string
+): Promise<FileSystem.FileSystemDownloadResult> {
+  const resumable = FileSystem.createDownloadResumable(
+    url, dest, { headers: referer ? { Referer: referer } : undefined }, onProgress, resumeData
+  )
+  _activeFile.set(key, resumable)
+  try {
+    const out = resumeData ? await resumable.resumeAsync() : await resumable.downloadAsync()
+    if (!out?.uri) throw new Error('La descarga no devolvió archivo')
+    if (out.status < 200 || out.status >= 300) throw new Error(`HTTP ${out.status}`)
+    return out
+  } catch (e) {
+    if (!ctrl.cancelled) {
+      await resumable.pauseAsync().catch(() => {})
+      const saved = resumable.savable().resumeData
+      throw Object.assign(e as Error, { resumeData: saved })
+    }
+    throw e
+  } finally {
+    _activeFile.delete(key)
+  }
 }
 
 async function _runDownload(
@@ -220,6 +328,9 @@ async function _runDownload(
   _active.set(key, ctrl)
   let lastFileSave = 0
 
+  // En cola hasta que haya un hueco: mientras tanto sigue 'pending'.
+  await acquireSlot()
+
   const update = async (patch: Partial<DownloadItem>) => {
     Object.assign(item, patch)
     map.set(key, item)
@@ -228,8 +339,39 @@ async function _runDownload(
   }
 
   try {
+    if (ctrl.cancelled) return
     // 1. Obtener lista de segmentos del API
-    await update({ status: 'downloading' })
+    await update({ status: 'downloading', error: undefined })
+
+    // ── Reanudar un archivo cortado ──
+    // Si hay datos de una descarga anterior, se intenta continuar desde donde
+    // quedó SIN volver a llamar a la API (no hace falta re-resolver nada). Si el
+    // link venció o el sistema ya no tiene el rastro, se descarta y se sigue con
+    // el flujo normal desde cero.
+    if (item.sourceUrl && item.resumeData) {
+      const rdir = DOWNLOADS_DIR + key + '/'
+      const rdest = rdir + fileNameFor(item.sourceUrl)
+      try {
+        const out = await downloadFileTo(
+          key, ctrl, item.sourceUrl, '', rdest, makeFileProgress(update, () => lastFileSave, (n) => { lastFileSave = n }),
+          item.resumeData
+        )
+        if (ctrl.cancelled) return
+        await downloadSubtitle(rdir, type, id, season, episode, 1)
+        const info = await FileSystem.getInfoAsync(out.uri)
+        await update({
+          status: 'done', progress: 1, downloadedSegments: 1, localPath: out.uri,
+          size: (info as any).size ?? 0, sourceUrl: undefined, resumeData: undefined,
+        })
+        return
+      } catch (e) {
+        if (ctrl.cancelled) return
+        console.warn('[download] no se pudo reanudar, se reinicia:', (e as Error).message)
+        await FileSystem.deleteAsync(rdest, { idempotent: true }).catch(() => {})
+        await update({ sourceUrl: undefined, resumeData: undefined, progress: 0 })
+      }
+    }
+
     const apiUrl = type === 'tv'
       ? `${API_URL}/download/tv/${id}/${season}/${episode}`
       : `${API_URL}/download/movie/${id}`
@@ -241,11 +383,27 @@ async function _runDownload(
     }
     type Caption = { language: string; url: string; type: string }
     const data:
-      | { kind: 'file'; url: string; referer: string; quality: string; captions: Caption[] }
+      | { kind: 'file'; url: string; referer: string; quality: string; sizeGB?: number | null; captions: Caption[] }
       | { kind: 'hls'; segments: SegmentInfo[]; referer: string; quality: string; captions: Caption[] }
       = await resp.json()
 
     if (ctrl.cancelled) return
+
+    // Espacio libre ANTES de empezar: un archivo de varios GB que se queda sin
+    // disco a la mitad falla horas después, sin explicación y habiendo gastado datos.
+    if (data.kind === 'file' && data.sizeGB && data.sizeGB > 0) {
+      try {
+        const free = await FileSystem.getFreeDiskStorageAsync()
+        const need = data.sizeGB * 1024 ** 3 * 1.1
+        if (free < need) {
+          const gb = (n: number) => (n / 1024 ** 3).toFixed(1)
+          throw new Error(`Espacio insuficiente: necesitas ${gb(need)} GB y hay ${gb(free)} GB`)
+        }
+      } catch (e) {
+        if ((e as Error).message.startsWith('Espacio insuficiente')) throw e
+        // si no se pudo consultar el disco, seguimos: no bloquear por eso
+      }
+    }
 
     // 2. Crear directorio
     const dir = DOWNLOADS_DIR + key + '/'
@@ -257,37 +415,20 @@ async function _runDownload(
     // varios GB reventaría la app. El resumable escribe a disco en streaming y
     // además da progreso real por bytes.
     if (data.kind === 'file') {
-      await update({ quality: data.quality, totalSegments: 1 })
+      await update({ quality: data.quality, totalSegments: 1, sourceUrl: data.url, resumeData: undefined })
       const dest = dir + fileNameFor(data.url)
-      const resumable = FileSystem.createDownloadResumable(
-        data.url,
-        dest,
-        { headers: data.referer ? { Referer: data.referer } : undefined },
-        (p) => {
-          if (!p.totalBytesExpectedToWrite || p.totalBytesExpectedToWrite < 0) return
-          const ratio = p.totalBytesWritten / p.totalBytesExpectedToWrite
-          // Throttle: el callback dispara muy seguido y cada update escribe
-          // en AsyncStorage y notifica a la UI.
-          const now = Date.now()
-          if (now - lastFileSave < 700 && ratio < 1) return
-          lastFileSave = now
-          update({ progress: ratio, size: p.totalBytesWritten }).catch(() => {})
-        }
+      const out = await downloadFileTo(
+        key, ctrl, data.url, data.referer, dest,
+        makeFileProgress(update, () => lastFileSave, (n) => { lastFileSave = n })
       )
-      _activeFile.set(key, resumable)
-      try {
-        const out = await resumable.downloadAsync()
-        if (ctrl.cancelled) return
-        if (!out?.uri) throw new Error('La descarga no devolvió archivo')
-        await downloadSubtitle(dir, type, id, season, episode, data.captions.length)
-        const info = await FileSystem.getInfoAsync(out.uri)
-        await update({
-          status: 'done', progress: 1, downloadedSegments: 1,
-          localPath: out.uri, size: (info as any).size ?? 0,
-        })
-      } finally {
-        _activeFile.delete(key)
-      }
+      if (ctrl.cancelled) return
+      await downloadSubtitle(dir, type, id, season, episode, data.captions.length)
+      const info = await FileSystem.getInfoAsync(out.uri)
+      await update({
+        status: 'done', progress: 1, downloadedSegments: 1,
+        localPath: out.uri, size: (info as any).size ?? 0,
+        sourceUrl: undefined, resumeData: undefined,
+      })
       return
     }
 
@@ -311,20 +452,11 @@ async function _runDownload(
       const info = await FileSystem.getInfoAsync(localUri)
       if (info.exists && (info as any).size > 0) return localUri
 
-      // Usar fetch + base64 write para control total de headers y manejo de errores
       let lastErr: Error = new Error('unknown')
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         if (ctrl.cancelled) throw new Error('cancelled')
         try {
-          const resp = await fetchWithTimeout(seg.url, 20_000, {
-            headers: referer ? { Referer: referer } : {},
-          })
-          if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-          const buf = await resp.arrayBuffer()
-          const b64 = bufToBase64(buf)
-          await FileSystem.writeAsStringAsync(localUri, b64, {
-            encoding: FileSystem.EncodingType.Base64,
-          })
+          await downloadSegmentFile(seg.url, localUri, referer ? { Referer: referer } : {})
           return localUri
         } catch (e) {
           lastErr = e as Error
@@ -386,13 +518,19 @@ async function _runDownload(
     })
 
   } catch (e) {
-    if (ctrl.cancelled) {
-      await update({ status: 'paused' })
-    } else {
-      await update({ status: 'error', error: (e as Error).message?.slice(0, 120) })
+    // Cancelada: cancelDownload ya borró la entrada. NO volver a escribirla —
+    // `update` hace map.set y la resucitaba como una fila 'paused' fantasma.
+    if (!ctrl.cancelled) {
+      await update({
+        status: 'error',
+        error: (e as Error).message?.slice(0, 120),
+        // Si el corte dejó datos de reanudación, se guardan para el reintento.
+        resumeData: (e as { resumeData?: string }).resumeData ?? undefined,
+      })
     }
   } finally {
     _active.delete(key)
+    releaseSlot()
   }
 }
 
