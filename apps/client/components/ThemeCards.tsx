@@ -1,37 +1,33 @@
 import { FlatList, StyleSheet, Text, View } from 'react-native'
+import { Image } from 'expo-image'
 import { LinearGradient } from 'expo-linear-gradient'
 import { SymbolView } from 'expo-symbols'
 import { useRouter } from 'expo-router'
 import { isInSeason, themesForNow, type SearchTheme } from '@/lib/themes'
-import { withAlpha } from '@/lib/color'
+import { mix, withAlpha } from '@/lib/color'
 import { Touchable } from './Touchable'
 import { Glass } from './Glass'
 import { RowHeading } from './RowHeading'
 import { useRowEndHaptic } from '@/lib/useRowEndHaptic'
 
 // Las piezas visuales de los temas del buscador (Navidad, Halloween…).
-// Todas usan la misma receta: un degradado en diagonal entre los DOS colores
-// del tema, un brillo arriba (volumen, como las tarjetas de canal de tvOS) y
-// el símbolo del tema. Así un tema se reconoce igual en la tarjeta, en el
-// banner del buscador y en su pantalla.
+// Receta común: la IMAGEN del tema (un título icónico: Mi pobre angelito,
+// Coco, Interstellar…) y encima una sombra en el color PRINCIPAL del tema,
+// oscurecido. Antes era un degradado entre los dos colores y en temas como
+// Navidad (rojo → verde) el medio quedaba marrón.
 
-function ThemeFill({ theme }: { theme: SearchTheme }) {
-  const [a, b] = theme.colors
+const ART_BASE = 'https://image.tmdb.org/t/p/'
+
+function ThemeArt({ theme, size = 'w780' }: { theme: SearchTheme; size?: string }) {
   return (
-    <>
-      <LinearGradient
-        colors={[a, withAlpha(b, 0.9)]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={StyleSheet.absoluteFill}
-      />
-      {/* Oscurece un poco abajo: el texto blanco se lee sobre cualquier color. */}
-      <LinearGradient
-        colors={['rgba(255,255,255,0.18)', 'rgba(255,255,255,0)', 'rgba(0,0,0,0.35)']}
-        locations={[0, 0.45, 1]}
-        style={StyleSheet.absoluteFill}
-      />
-    </>
+    <Image
+      source={ART_BASE + size + theme.art}
+      style={StyleSheet.absoluteFill}
+      contentFit="cover"
+      transition={200}
+      cachePolicy="memory-disk"
+      accessibilityIgnoresInvertColors
+    />
   )
 }
 
@@ -46,23 +42,44 @@ export function ThemeBanner({ theme }: { theme: SearchTheme }) {
       haptic="light"
       onPress={() => router.push(`/theme/${theme.key}` as never)}
       accessibilityRole="button"
-      accessibilityLabel={`Especial ${theme.name}. ${theme.tagline}. Ver especial`}
+      accessibilityLabel={`${theme.franchise ? 'Franquicia' : 'Especial'} ${theme.name}. ${theme.tagline}. Ver`}
     >
-      <View style={styles.banner}>
-        <ThemeFill theme={theme} />
-        {/* Símbolo grande y recortado al fondo: textura, no protagonista. */}
-        <SymbolView name={theme.symbol as never} tintColor="rgba(255,255,255,0.12)" style={styles.bannerWatermark} />
-        <Glass radius={22} variant="clear" style={styles.bannerIcon}>
-          <SymbolView name={theme.symbol as never} weight="semibold" tintColor="#fff" style={styles.bannerIconSymbol} />
-        </Glass>
-        <View style={styles.bannerText}>
-          <Text style={styles.kicker} maxFontSizeMultiplier={1.3}>
-            {isInSeason(theme) ? 'Especial de temporada' : 'Especial'}
-          </Text>
-          <Text style={styles.bannerName} numberOfLines={1} maxFontSizeMultiplier={1.3}>{theme.name}</Text>
-          <Text style={styles.bannerTagline} numberOfLines={1} maxFontSizeMultiplier={1.3}>{theme.tagline}</Text>
+      <View style={[styles.banner, { backgroundColor: mix(theme.colors[0], 0.25) }]}>
+        {/* La imagen ocupa la mitad derecha y se funde hacia la izquierda en
+            el color del tema, donde va el texto. */}
+        <View style={styles.bannerArt}>
+          <ThemeArt theme={theme} />
         </View>
-        <SymbolView name="chevron.right" weight="semibold" tintColor="rgba(255,255,255,0.85)" style={styles.bannerChevron} />
+        <LinearGradient
+          colors={[mix(theme.colors[0], 0.25), withAlpha(mix(theme.colors[0], 0.25), 0.85), withAlpha(mix(theme.colors[0], 0.25), 0)]}
+          locations={[0.35, 0.55, 0.9]}
+          start={{ x: 0, y: 0.5 }}
+          end={{ x: 1, y: 0.5 }}
+          style={StyleSheet.absoluteFill}
+        />
+        <View style={styles.bannerText}>
+          <View style={styles.kickerRow}>
+            <SymbolView name={theme.symbol as never} weight="semibold" tintColor={tone(theme)} style={styles.kickerSymbol} />
+            <Text style={[styles.kicker, { color: tone(theme) }]} maxFontSizeMultiplier={1.3}>
+              {theme.franchise ? 'Franquicia' : isInSeason(theme) ? 'Especial de temporada' : 'Especial'}
+            </Text>
+          </View>
+          {theme.logo ? (
+            <Image
+              source={ART_BASE + 'w500' + theme.logo}
+              style={styles.bannerLogo}
+              contentFit="contain"
+              contentPosition="left"
+              accessibilityLabel={theme.name}
+            />
+          ) : (
+            <Text style={styles.bannerName} numberOfLines={1} maxFontSizeMultiplier={1.3}>{theme.name}</Text>
+          )}
+          <Text style={styles.bannerTagline} numberOfLines={2} maxFontSizeMultiplier={1.3}>{theme.tagline}</Text>
+        </View>
+        <Glass radius={16} variant="clear" style={styles.bannerCta}>
+          <SymbolView name="chevron.right" weight="bold" tintColor="#fff" style={styles.bannerChevron} />
+        </Glass>
       </View>
     </Touchable>
   )
@@ -70,13 +87,14 @@ export function ThemeBanner({ theme }: { theme: SearchTheme }) {
 
 // ── Fila "Especiales" del buscador vacío ─────────────────────────────────
 // Para descubrirlos sin saber que existen. Los de temporada van primero y
-// llevan un punto que lo indica.
-const TILE_W = 156
-const TILE_H = 104
+// llevan "De temporada" arriba del nombre.
+const TILE_W = 232
+const TILE_H = 130 // 16:9
 
 function ThemeTile({ theme }: { theme: SearchTheme }) {
   const router = useRouter()
   const seasonal = isInSeason(theme)
+  const shade = mix(theme.colors[0], 0.3)
   return (
     <Touchable
       scaleTo={0.95}
@@ -85,19 +103,37 @@ function ThemeTile({ theme }: { theme: SearchTheme }) {
       accessibilityRole="button"
       accessibilityLabel={`Especial ${theme.name}${seasonal ? ', de temporada' : ''}`}
     >
-      <View style={styles.tile}>
-        <ThemeFill theme={theme} />
-        <SymbolView name={theme.symbol as never} tintColor="rgba(255,255,255,0.22)" style={styles.tileWatermark} />
-        {seasonal && (
-          <View style={styles.seasonBadge}>
-            <View style={styles.seasonDot} />
-            <Text style={styles.seasonText}>Temporada</Text>
+      <View style={[styles.tile, { backgroundColor: shade }]}>
+        <ThemeArt theme={theme} size="w500" />
+        {/* Sombra en el color del tema, de abajo hacia arriba: tiñe la imagen
+            con la identidad del tema y deja legible el nombre. */}
+        <LinearGradient
+          colors={[withAlpha(shade, 0), withAlpha(shade, 0.55), withAlpha(shade, 0.95)]}
+          locations={[0.25, 0.6, 1]}
+          style={StyleSheet.absoluteFill}
+        />
+        <View style={styles.tileText}>
+          {seasonal && (
+            <Text style={[styles.tileKicker, { color: tone(theme) }]} maxFontSizeMultiplier={1.25}>
+              De temporada
+            </Text>
+          )}
+          <View style={styles.tileNameRow}>
+            <SymbolView name={theme.symbol as never} weight="semibold" tintColor="#fff" style={styles.tileSymbol} />
+            <Text style={styles.tileName} numberOfLines={1} maxFontSizeMultiplier={1.25}>{theme.name}</Text>
           </View>
-        )}
-        <Text style={styles.tileName} numberOfLines={2} maxFontSizeMultiplier={1.25}>{theme.name}</Text>
+        </View>
       </View>
     </Touchable>
   )
+}
+
+// Versión clara del color del tema para los textos chicos ("De temporada"):
+// el color puro sobre su propia sombra no se lee; mezclado con blanco, sí.
+function tone(theme: SearchTheme) {
+  const n = parseInt(theme.colors[0].slice(1), 16)
+  const lift = (c: number) => Math.round(c + (255 - c) * 0.55)
+  return `rgb(${lift((n >> 16) & 255)}, ${lift((n >> 8) & 255)}, ${lift(n & 255)})`
 }
 
 export function ThemeRow({ kids = false }: { kids?: boolean }) {
@@ -123,28 +159,28 @@ export function ThemeRow({ kids = false }: { kids?: boolean }) {
 const styles = StyleSheet.create({
   // Banner
   banner: {
-    height: 92,
+    height: 112,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 14,
-    paddingHorizontal: 16,
+    gap: 12,
+    paddingLeft: 18,
+    paddingRight: 14,
     borderRadius: 20,
     borderCurve: 'continuous',
     overflow: 'hidden',
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.18)',
+    borderColor: 'rgba(255,255,255,0.16)',
   },
-  bannerWatermark: { position: 'absolute', right: -18, top: -14, width: 120, height: 120 },
-  bannerIcon: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  bannerIconSymbol: { width: 22, height: 22 },
+  bannerArt: { position: 'absolute', top: 0, bottom: 0, right: 0, width: '62%' },
   bannerText: { flex: 1 },
-  kicker: {
-    color: 'rgba(255,255,255,0.8)', fontSize: 11, fontWeight: '700',
-    letterSpacing: 1, textTransform: 'uppercase',
-  },
-  bannerName: { color: '#fff', fontSize: 22, fontWeight: '800', letterSpacing: -0.4, marginTop: 1 },
-  bannerTagline: { color: 'rgba(255,255,255,0.82)', fontSize: 13, marginTop: 1 },
-  bannerChevron: { width: 13, height: 13 },
+  kickerRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 2 },
+  kickerSymbol: { width: 12, height: 12 },
+  kicker: { fontSize: 11, fontWeight: '700', letterSpacing: 0.8, textTransform: 'uppercase' },
+  bannerLogo: { width: '100%', height: 38, marginVertical: 2 },
+  bannerName: { color: '#fff', fontSize: 24, fontWeight: '800', letterSpacing: -0.5 },
+  bannerTagline: { color: 'rgba(255,255,255,0.78)', fontSize: 13, lineHeight: 17, marginTop: 2, maxWidth: '85%' },
+  bannerCta: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
+  bannerChevron: { width: 12, height: 12 },
 
   // Fila
   row: { marginBottom: 28 },
@@ -155,17 +191,13 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     borderCurve: 'continuous',
     overflow: 'hidden',
-    padding: 12,
     justifyContent: 'flex-end',
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.16)',
+    borderColor: 'rgba(255,255,255,0.14)',
   },
-  tileWatermark: { position: 'absolute', right: -10, top: -8, width: 72, height: 72 },
-  tileName: { color: '#fff', fontSize: 17, fontWeight: '800', letterSpacing: -0.3 },
-  seasonBadge: {
-    position: 'absolute', top: 10, left: 10, flexDirection: 'row', alignItems: 'center', gap: 5,
-    backgroundColor: 'rgba(0,0,0,0.3)', paddingHorizontal: 8, height: 20, borderRadius: 10,
-  },
-  seasonDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#fff' },
-  seasonText: { color: '#fff', fontSize: 11, fontWeight: '700' },
+  tileText: { padding: 14 },
+  tileKicker: { fontSize: 11, fontWeight: '800', letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: 3 },
+  tileNameRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  tileSymbol: { width: 17, height: 17 },
+  tileName: { flexShrink: 1, color: '#fff', fontSize: 20, fontWeight: '800', letterSpacing: -0.4 },
 })

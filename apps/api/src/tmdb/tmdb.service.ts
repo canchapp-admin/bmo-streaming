@@ -60,6 +60,10 @@ function dedupeSort(items: any[], sortBy: string): any[] {
 }
 
 export const tmdbService = {
+  // Ficha mínima de un título (sin créditos ni videos): para filas curadas a
+  // mano por ID, donde solo hace falta póster, backdrop y nombre.
+  basic: (type: 'movie' | 'tv', id: number) => tmdb<any>(`/${type}/${id}`),
+
   // Filas para la pantalla de inicio
   trending: () => tmdb('/trending/all/week'),
   popularMovies: (page = 1) => tmdb('/movie/popular', { page }),

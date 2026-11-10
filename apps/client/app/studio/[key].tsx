@@ -1,4 +1,5 @@
 import { BackButton } from '@/components/BackButton'
+import { ThemeEffect } from '@/components/ThemeEffect'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { useRef } from 'react'
 import { Animated, View, Text, StyleSheet, Dimensions } from 'react-native'
@@ -87,7 +88,10 @@ export default function StudioScreen() {
 
   // Parallax suave del hero y franja oscura arriba al bajar (detrás del botón
   // de volver y la hora).
-  const heroShift = scrollY.interpolate({ inputRange: [-200, 0, HERO_H], outputRange: [-60, 0, HERO_H * 0.35], extrapolate: 'clamp' })
+  const heroShift = scrollY.interpolate({ inputRange: [-400, 0, HERO_H], outputRange: [-400, 0, HERO_H * 0.35], extrapolate: 'clamp' })
+  // Estirón al tirar hacia abajo: la foto sube con el contenido (heroShift)
+  // y crece desde arriba, así nunca asoma el fondo negro sobre el hero.
+  const heroStretch = scrollY.interpolate({ inputRange: [-400, 0], outputRange: [1 + 400 / HERO_H, 1], extrapolate: 'clamp' })
   const edgeOpacity = scrollY.interpolate({ inputRange: [HERO_H - 160, HERO_H - 60], outputRange: [0, 1], extrapolate: 'clamp' })
 
   return (
@@ -112,20 +116,36 @@ export default function StudioScreen() {
         {/* ── Hero ── */}
         {/* overflow hidden: con el parallax la foto ya no se sale del hero
             por encima de las filas. */}
-        <View style={{ height: HERO_H, overflow: 'hidden' }}>
-          <Animated.View style={[StyleSheet.absoluteFill, { transform: [{ translateY: heroShift }] }]}>
+        <View style={{ height: HERO_H }}>
+          {/* Recorte que llega muy por encima del hero y lo corta solo por
+              abajo: la foto puede cubrir el estirón sin pasarse a las filas. */}
+          <View style={styles.heroClip} pointerEvents="none">
+          <Animated.View style={[styles.heroLayer, { transform: [{ translateY: heroShift }, { scale: heroStretch }] }]}>
             {heroUrl ? (
               <Image source={heroUrl} style={StyleSheet.absoluteFill} contentFit="cover" transition={400} />
             ) : (
               <View style={[StyleSheet.absoluteFill, { backgroundColor: glow }]} />
             )}
+            {/* Baño del color de la marca en diagonal (rojo Netflix, azul
+                Disney…), como en los especiales. Dentro de la capa que se
+                estira, así lo estirado al tirar hacia abajo también se tiñe. */}
+            <LinearGradient
+              colors={[withAlpha(glow, 0.42), withAlpha(glow, 0.06), withAlpha(glow, 0.3)]}
+              locations={[0, 0.5, 1]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={StyleSheet.absoluteFill}
+            />
+            {/* Arriba, una sombra neutra para que se lean el logo y la hora.
+                Dentro de la capa que se estira, para que cubra también lo
+                estirado al tirar hacia abajo. */}
+            <LinearGradient
+              colors={['rgba(0,0,0,0.55)', 'rgba(0,0,0,0)']}
+              locations={[0, 0.3]}
+              style={StyleSheet.absoluteFill}
+            />
           </Animated.View>
-          {/* Arriba, una sombra neutra para que se lean el logo y la hora. */}
-          <LinearGradient
-            colors={['rgba(0,0,0,0.55)', 'rgba(0,0,0,0)']}
-            locations={[0, 0.3]}
-            style={StyleSheet.absoluteFill}
-          />
+          </View>
           {/* Abajo, un fundido largo y con muchas paradas (sin escalones) hacia
               el color base de la marca. */}
           <LinearGradient
@@ -220,6 +240,10 @@ export default function StudioScreen() {
         )}
       </Animated.ScrollView>
 
+      {/* Saludo animado de la marca (barrido de luz, hiperespacio, polvo
+          mágico…). Se va solo; no bloquea toques. */}
+      {!!key && <ThemeEffect themeKey={key} />}
+
       {/* Franja superior al bajar: el botón de volver y la hora sobre negro. */}
       <Animated.View pointerEvents="none" style={[styles.topEdge, { height: insets.top + 60, opacity: edgeOpacity }]}>
         <LinearGradient colors={['rgba(0,0,0,0.95)', 'rgba(0,0,0,0.6)', 'transparent']} style={StyleSheet.absoluteFill} />
@@ -230,7 +254,11 @@ export default function StudioScreen() {
   )
 }
 
+const HERO_OVERSCROLL = 1000
+
 const styles = StyleSheet.create({
+  heroClip: { position: 'absolute', left: 0, right: 0, top: -HERO_OVERSCROLL, bottom: 0, overflow: 'hidden' },
+  heroLayer: { position: 'absolute', left: 0, right: 0, top: HERO_OVERSCROLL, bottom: 0, transformOrigin: 'top center' },
   container: { flex: 1, backgroundColor: '#000' },
   ambient: { position: 'absolute', left: 0, right: 0, height: 900 },
   brandMark: { position: 'absolute', left: 72, right: 72, height: 44, alignItems: 'center', justifyContent: 'center' },

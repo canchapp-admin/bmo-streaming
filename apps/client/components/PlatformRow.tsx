@@ -22,6 +22,10 @@ export type Platform = {
   bg: [string, string]
   tint?: string // pinta el logo de un solo color; sin esto, colores originales
   logoW?: number // ancho relativo (0–1) — los logos altos se ven enormes a ancho completo
+  // Destino propio (franquicias armadas como tema, p. ej. Drag Race), y su
+  // nombre si no es una marca de STUDIO_BRANDS.
+  href?: string
+  name?: string
 }
 
 export const LOGO_BASE = 'https://image.tmdb.org/t/p/w500'
@@ -44,6 +48,12 @@ const FRANCHISES: Platform[] = [
   { key: 'dc', logo: '/4Y00XuSMuP1gimd0jP6JT57QbCI.png', bg: ['#0B2A66', '#050F26'], logoW: 0.36 },
   // TMDB no tiene logo propio de Star Wars: se usa el de Lucasfilm, su casa.
   { key: 'starwars', logo: '/tlVSws0RvvtPBwViUyOFAO0vcQS.png', bg: ['#1C1C1C', '#000000'], tint: '#FFE81F', logoW: 0.6 },
+  // RuPaul's Drag Race: logo cromado sobre fucsia → violeta, los colores del
+  // show. Abre su pantalla de franquicia (un tema curado, no un estudio).
+  {
+    key: 'rupaul', name: "RuPaul's Drag Race", href: '/theme/rupaul',
+    logo: '/9sSyE71HAlNLwaReiLIey6L7tYc.png', bg: ['#FF2E93', '#5B1A9E'], logoW: 0.8,
+  },
   { key: 'pixar', logo: '/1TjvGVDMYsj6JBxOAkUHpPEwLf7.png', bg: ['#2AA5E0', '#0D5C8A'], tint: '#fff', logoW: 0.62 },
   { key: 'disneyanimation', logo: '/8bH86UPmMP8hlITzXV3XgV9eaAc.png', bg: ['#1B3A8C', '#0A1640'], tint: '#fff', logoW: 0.66 },
   { key: 'dreamworks', logo: '/3BPX5VGBov8SDqTV7wC1L1xShAS.png', bg: ['#1E6FCC', '#0B2E5C'], tint: '#fff', logoW: 0.5 },
@@ -66,13 +76,13 @@ const CARD_H = 117 // 16:9
 
 function PlatformCard({ p }: { p: Platform }) {
   const router = useRouter()
-  const name = STUDIO_BRANDS.find((b) => b.key === p.key)?.name ?? p.key
+  const name = p.name ?? STUDIO_BRANDS.find((b) => b.key === p.key)?.name ?? p.key
   const logoW = CARD_W * (p.logoW ?? 0.7)
   return (
     <Touchable
       scaleTo={0.95}
       haptic="light"
-      onPress={() => router.push(`/studio/${p.key}` as never)}
+      onPress={() => router.push((p.href ?? `/studio/${p.key}`) as never)}
       accessibilityRole="button"
       accessibilityLabel={`Catálogo de ${name}`}
     >

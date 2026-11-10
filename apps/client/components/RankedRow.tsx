@@ -1,4 +1,5 @@
 import { View, Text, FlatList, StyleSheet } from 'react-native'
+import Svg, { Defs, LinearGradient as SvgGradient, Stop, Text as SvgText } from 'react-native-svg'
 import { Image } from 'expo-image'
 import { type MediaItem, posterUrl, titleOf } from '@/lib/tmdb'
 import { prewarmTitle } from '@/lib/stream'
@@ -9,31 +10,77 @@ import { useRowEndHaptic } from '@/lib/useRowEndHaptic'
 import { colors } from '@/lib/theme'
 import { rowVirtualization, fixedItemLayout } from './rowVirtualization'
 
-// Top 10 grande, con el número gigante asomando detrás del póster: es la fila
-// que más tiene que destacarse a simple vista.
+// Top 10 grande, al estilo de los rankings de Apple TV: el número gigante
+// queda DETRÁS del póster y asoma por su izquierda.
+//
+//  · El número es un contorno claro con relleno casi transparente (SVG), no
+//    un bloque blanco: se lee enorme sin pelearse con el póster ni con fondos
+//    de color (pantallas de marca o de especial).
+//  · Cada número tiene su ancho: el "10" ocupa casi el doble que el "1". Antes
+//    todos compartían 56 pt y el 10 salía achicado y cortado.
 const CARD_W = 136
 const CARD_H = CARD_W * 1.5
-const NUM_W = 56
+const NUM_SIZE = 150 // alto del número (pt)
+const OVERLAP = 30 // cuánto del número queda tapado por el póster
+const GAP = 10
+const numWidth = (rank: number) => (rank >= 10 ? 156 : rank === 1 ? 74 : 92)
+
+function RankNumber({ rank }: { rank: number }) {
+  const w = numWidth(rank)
+  const h = CARD_H
+  const id = `rank-${rank}`
+  return (
+    <Svg width={w} height={h} style={styles.num} pointerEvents="none">
+      <Defs>
+        <SvgGradient id={id} x1="0" y1="0" x2="0" y2="1">
+          <Stop offset="0" stopColor="#FFFFFF" stopOpacity="0.22" />
+          <Stop offset="1" stopColor="#FFFFFF" stopOpacity="0.02" />
+        </SvgGradient>
+      </Defs>
+      <SvgText
+        x={w}
+        // Base del número apenas por debajo del borde del póster: el número
+        // "apoya" en el suelo de la fila.
+        y={h - 4}
+        textAnchor="end"
+        fontSize={NUM_SIZE}
+        fontWeight="900"
+        letterSpacing={rank >= 10 ? -10 : 0}
+        fill={`url(#${id})`}
+        stroke="rgba(255,255,255,0.85)"
+        strokeWidth={2.5}
+        strokeLinejoin="round"
+      >
+        {String(rank)}
+      </SvgText>
+    </Svg>
+  )
+}
 
 function RankedCard({ item, rank }: { item: MediaItem; rank: number }) {
   const uri = posterUrl(item.poster_path, 'w500')
   const isTv = item.media_type === 'tv' || (!!item.name && !item.title)
+  const numW = numWidth(rank)
 
   return (
     <TitleMenu item={menuItemFrom(item)}>
     <Touchable
-      style={styles.card}
+      style={StyleSheet.flatten([styles.card, { width: numW - OVERLAP + CARD_W }])}
       haptic="light"
       onPressIn={() => prewarmTitle(item.id, isTv)}
+      accessibilityLabel={`Número ${rank}: ${titleOf(item)}`}
     >
-      <Text style={styles.num} maxFontSizeMultiplier={1} adjustsFontSizeToFit numberOfLines={1}>{rank}</Text>
-      {uri ? (
-        <Image source={uri} style={styles.poster} contentFit="cover" transition={200} cachePolicy="memory-disk" recyclingKey={String(item.id)} />
-      ) : (
-        <View style={[styles.poster, styles.placeholder]}>
-          <Text style={styles.placeholderText} numberOfLines={3}>{titleOf(item)}</Text>
-        </View>
-      )}
+      {/* Primero el número y después el póster: el póster queda encima. */}
+      <RankNumber rank={rank} />
+      <View style={[styles.posterWrap, { left: numW - OVERLAP }]}>
+        {uri ? (
+          <Image source={uri} style={styles.poster} contentFit="cover" transition={200} cachePolicy="memory-disk" recyclingKey={String(item.id)} />
+        ) : (
+          <View style={[styles.poster, styles.placeholder]}>
+            <Text style={styles.placeholderText} numberOfLines={3}>{titleOf(item)}</Text>
+          </View>
+        )}
+      </View>
     </Touchable>
     </TitleMenu>
   )
@@ -63,7 +110,9 @@ export function RankedRow({
         onScroll={onScroll}
         scrollEventThrottle={64}
         contentContainerStyle={styles.list}
-        getItemLayout={fixedItemLayout(NUM_W - 14 + CARD_W + 8)}
+        // Todos miden lo mismo salvo el 10, que es el último: los offsets de
+        // los anteriores siguen siendo exactos.
+        getItemLayout={fixedItemLayout(numWidth(2) - OVERLAP + CARD_W + GAP)}
         {...rowVirtualization}
       />
     </View>
@@ -72,30 +121,23 @@ export function RankedRow({
 
 const styles = StyleSheet.create({
   row: { marginBottom: 24 },
-  list: { paddingHorizontal: 20, paddingLeft: 20 - NUM_W + 8 },
-  card: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    marginRight: 8,
-  },
-  num: {
-    width: NUM_W,
-    color: colors.text,
-    fontSize: 84,
-    fontWeight: '900',
-    lineHeight: 84,
-    letterSpacing: -6,
-    textAlign: 'right',
-    marginRight: -14,
-    marginBottom: -6,
-    zIndex: 1,
-    textShadowColor: '#000',
-    textShadowRadius: 4,
+  list: { paddingLeft: 12, paddingRight: 20 },
+  card: { height: CARD_H, marginRight: GAP },
+  num: { position: 'absolute', left: 0, bottom: 0 },
+  posterWrap: {
+    position: 'absolute',
+    top: 0,
+    // Sombra hacia la izquierda: despega el póster del número que tapa.
+    shadowColor: '#000',
+    shadowOpacity: 0.6,
+    shadowRadius: 10,
+    shadowOffset: { width: -4, height: 0 },
   },
   poster: {
     width: CARD_W,
     height: CARD_H,
     borderRadius: 12,
+    borderCurve: 'continuous',
     backgroundColor: colors.surface,
   },
   placeholder: {

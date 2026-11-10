@@ -42,6 +42,8 @@ import { colors } from '@/lib/theme'
 
 const { width } = Dimensions.get('window')
 const HERO_H = width * 0.95
+// Cuánto puede estirarse la foto hacia arriba al tirar la ficha hacia abajo.
+const HERO_OVERSCROLL = 1000
 // Un tráiler es 16:9. Si se reproduce dentro del hero (que es casi cuadrado, a
 // medida del póster) quedaba una franja negra enorme debajo del video. Con el
 // tráiler abierto el hero se encoge a la altura exacta del video y el cuerpo de
@@ -182,7 +184,11 @@ export default function TitleScreen() {
         // en vez de dejar un hueco negro: es el "estirón" de las fichas de
         // Apple TV/Music. Al subir, se desplaza a la mitad de la velocidad del
         // scroll — eso es el parallax.
-        { translateY: y < 0 ? 0 : y * 0.5 },
+        // Al tirar (y < 0) la foto sube lo mismo que bajó el contenido, así su
+        // borde de arriba queda pegado al de la pantalla, y crece para que el
+        // de abajo no se mueva. Antes solo crecía: el borde bajaba con el
+        // contenido y arriba se veía el fondo negro.
+        { translateY: y < 0 ? y : y * 0.5 },
         { scale: y < 0 ? 1 + (-y / HERO_H) : 1 },
       ],
     }
@@ -295,16 +301,21 @@ export default function TitleScreen() {
         scrollEnabled={!trailerOpen}
       >
         <Animated.View style={[styles.hero, heroBoxStyle]}>
-          <Animated.View style={[StyleSheet.absoluteFill, styles.heroLayer, heroStyle]}>
-            {backdropUrl(data.backdrop_path, 'w1280') && (
-              <Image
-                source={backdropUrl(data.backdrop_path, 'w1280')}
-                style={styles.heroBg}
-                contentFit="cover"
-                transition={250}
-              />
-            )}
-          </Animated.View>
+          {/* Recorte que llega muy por ENCIMA del hero y termina en su borde
+              de abajo: la foto puede subir a cubrir el estirón, pero nunca
+              pasarse al cuerpo de la ficha con el parallax. */}
+          <View style={styles.heroClip} pointerEvents="none">
+            <Animated.View style={[styles.heroLayer, heroStyle]}>
+              {backdropUrl(data.backdrop_path, 'w1280') && (
+                <Image
+                  source={backdropUrl(data.backdrop_path, 'w1280')}
+                  style={styles.heroBg}
+                  contentFit="cover"
+                  transition={250}
+                />
+              )}
+            </Animated.View>
+          </View>
 
           {trailerOpen && trailer ? (
             <Animated.View entering={FadeIn.duration(220)} style={StyleSheet.absoluteFill}>
@@ -521,13 +532,14 @@ const styles = StyleSheet.create({
   hero: {
     width,
     backgroundColor: colors.surface,
-    // La imagen escalada no debe pasarse al cuerpo de la ficha.
-    overflow: 'hidden',
+    // Sin overflow hidden: el recorte lo hace heroClip, que deja a la foto
+    // subir por encima del hero (estirón) y la corta solo por abajo.
   },
   // El estirón al tirar hacia abajo crece desde el borde de arriba; sin esto
   // escalaría desde el centro y despegaría la imagen del tope de la pantalla.
   // Va en la capa que realmente lleva el transform, no en el contenedor.
-  heroLayer: { transformOrigin: 'top center' },
+  heroLayer: { position: 'absolute', left: 0, right: 0, top: HERO_OVERSCROLL, bottom: 0, transformOrigin: 'top center' },
+  heroClip: { position: 'absolute', left: 0, right: 0, top: -HERO_OVERSCROLL, bottom: 0, overflow: 'hidden' },
   heroBg: { ...StyleSheet.absoluteFillObject },
   heroGradient: { ...StyleSheet.absoluteFillObject },
   heroContent: {

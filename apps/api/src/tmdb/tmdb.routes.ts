@@ -82,7 +82,14 @@ type ThemeRow = {
   sort?: 'popular' | 'top' | 'recent'
   // Fila con números (Top 10) o con imágenes horizontales; por defecto, pósters.
   style?: 'poster' | 'backdrop' | 'ranked'
-  params: Record<string, string | number>
+  params?: Record<string, string | number>
+  // Fila curada a mano: estos títulos, en este orden (en vez de un discover).
+  ids?: number[]
+  // Igual, pero mezclando pelis y series: [tipo, id].
+  items?: ['movie' | 'tv', number][]
+  // Nombres a mano para títulos que TMDB no tiene en español ni en inglés
+  // (Drag Race Thailand venía en tailandés).
+  names?: Record<number, string>
 }
 const KW = {
   christmas: '207317|1991|5570|260365', // christmas, santa claus, christmas tree, christmas eve
@@ -213,7 +220,64 @@ const THEMES: Record<string, { name: string; rows: ThemeRow[] }> = {
 }
 const THEME_ROW_MIN = 6
 
+// ── RuPaul's Drag Race ───────────────────────────────────────────────────
+// La franquicia, curada a mano: primero el universo original, después cada
+// versión del mundo (México primero), y alrededor el cine, el ballroom y lo
+// imperdible LGBTQ+. IDs de TMDB verificados uno por uno.
+THEMES.rupaul = {
+  name: "RuPaul's Drag Race",
+  rows: [
+    {
+      title: 'El universo Drag Race', type: 'tv',
+      // Original, All Stars, Global All Stars, Untucked, AS Untucked,
+      // Secret Celebrity, Live Untucked.
+      ids: [8514, 67482, 232821, 38409, 67564, 98888, 251306],
+    },
+    {
+      title: 'Drag Race por el mundo', type: 'tv', style: 'backdrop',
+      // México, España, UK, Canadá, Down Under, Francia, Italia, Brasil,
+      // Filipinas, Tailandia, Holanda, Bélgica, Suecia, Alemania.
+      ids: [226082, 124045, 92611, 94038, 122692, 152261, 127841, 216276, 139203, 77233, 108934, 200865, 200870, 231807],
+      names: { 77233: 'Drag Race Thailand' },
+    },
+    { title: 'Más competencias drag', type: 'tv', params: { with_keywords: '824|305127', 'vote_count.gte': 5 } },
+    {
+      // Curada: la palabra clave "drag" sola traía comedias de disfraces y
+      // títulos explícitos que no son de este mundo.
+      title: 'Películas con drag queens', type: 'movie',
+      // Priscilla, The Birdcage, To Wong Foo, Hairspray, Kinky Boots, Todos
+      // hablan de Jamie, Hurricane Bianca, Dumplin', La Cage aux folles,
+      // Hedwig, Stage Mother, Flawless.
+      ids: [2759, 11000, 9090, 2976, 16367, 624899, 400547, 472734, 4484, 13403, 626020, 31582],
+    },
+    {
+      title: 'Ballroom y voguing', type: 'tv', style: 'backdrop',
+      // Pose, Paris Is Burning, Legendary, Kiki, My House, Saturday Church,
+      // Port Authority, Tangerine.
+      items: [['tv', 79084], ['movie', 31225], ['tv', 99595], ['movie', 373480], ['tv', 78758], ['movie', 450608], ['movie', 572404], ['movie', 308084]],
+    },
+    { title: 'Imperdibles del orgullo', type: 'movie', sort: 'top', style: 'ranked', params: { with_keywords: 158718, 'vote_count.gte': 1500 } },
+    { title: 'Más de World of Wonder', type: 'tv', params: { with_companies: '1421|218794', 'vote_count.gte': 3 } },
+  ],
+}
+
 async function themeRow(row: ThemeRow) {
+  const curated: ['movie' | 'tv', number][] | undefined =
+    row.items ?? row.ids?.map((id) => [row.type, id] as ['movie' | 'tv', number])
+  if (curated?.length) {
+    const settled = await Promise.allSettled(curated.map(([type, id]) => tmdbService.basic(type, id)))
+    const results = settled.flatMap((r, i) => {
+      if (r.status !== 'fulfilled' || !r.value?.poster_path) return []
+      const [type, id] = curated[i]
+      const fixed = row.names?.[id]
+      return [{
+        ...r.value,
+        media_type: type,
+        ...(fixed ? (type === 'tv' ? { name: fixed } : { title: fixed }) : {}),
+      }]
+    })
+    return { title: row.title, type: row.type, style: row.style ?? 'poster', results }
+  }
   const isMovie = row.type === 'movie'
   const sortBy =
     row.sort === 'top' ? 'vote_average.desc'
@@ -222,7 +286,7 @@ async function themeRow(row: ThemeRow) {
   const params: Record<string, string | number> = {
     // Piso de votos: sin esto aparecen rarezas sin póster ni sinopsis.
     'vote_count.gte': row.sort === 'top' ? 300 : 20,
-    ...row.params,
+    ...(row.params ?? {}),
   }
   // "Recientes" sin tope trae estrenos futuros sin arte.
   if (row.sort === 'recent') {
